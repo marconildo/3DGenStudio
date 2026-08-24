@@ -3,6 +3,7 @@
 // No React, no component state.
 
 import * as THREE from 'three'
+import { viewWorldHeightAt } from './cameraViewport'
 
 /**
  * Convert a screen-space brush radius (pixels) into the equivalent radius in
@@ -50,8 +51,7 @@ export function computePaintBrushTexturePx(paintBrushSize, camera, canvasHeight,
 
   // World units per screen pixel at the hit distance.
   const distance = camera.position.distanceTo(intersection.point)
-  const fovRad = (camera.fov || 50) * Math.PI / 180
-  const worldHeightAtDistance = 2 * Math.tan(fovRad / 2) * distance
+  const worldHeightAtDistance = viewWorldHeightAt(camera, distance)
   if (worldHeightAtDistance <= 0) return paintBrushSize
   const worldUnitsPerScreenPx = worldHeightAtDistance / Math.max(1, canvasHeight)
 
@@ -160,6 +160,15 @@ export function pickGeneratedTextureAsset(generatedAssets = []) {
   return preferredAsset || generatedAssets[0]
 }
 
+/**
+ * Frame the whole mesh from the direction the viewport camera is looking, so the
+ * render sent to ComfyUI and the bake that reads it back share one projection.
+ *
+ * PERSPECTIVE ONLY: the fit is tan(fov/2) trig, and an orthographic clone would keep
+ * the viewport's own frustum (wrong aspect for a square render target) with no refit
+ * at all. The editor locks Texturing and Projection to a perspective viewport for
+ * exactly this reason — see `cameraLockedToPerspective` in MeshEditorPage.
+ */
 export function buildFramedProjectionCamera(sourceCamera, root, aspect = 1) {
   const projectionCamera = sourceCamera?.clone?.()
   if (!projectionCamera || !root) {

@@ -1,5 +1,5 @@
 import { Canvas } from '@react-three/fiber'
-import { Grid, PerspectiveCamera } from '@react-three/drei'
+import { Grid } from '@react-three/drei'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import * as THREE from 'three'
@@ -139,8 +139,12 @@ import {
   applyPatchBlendToCanvas,
   createProjectionCropMaskCanvasFromPatch
 } from '../utils/meshPaintTexture'
+import { viewWorldHeightAt } from '../utils/cameraViewport'
+import { isPointerOverViewGizmo } from '../utils/viewGizmoLayout'
 
 import CameraRig from '../components/meshEditor/CameraRig'
+import ViewportCameras from '../components/meshEditor/ViewportCameras'
+import ViewGizmo from '../components/meshEditor/ViewGizmo'
 import EditorMesh from '../components/meshEditor/EditorMesh'
 import BooleanPreviewMesh from '../components/meshEditor/BooleanPreviewMesh'
 import TexturedMesh from '../components/meshEditor/TexturedMesh'
@@ -363,8 +367,7 @@ function computeProjectionMaskWorldRadius(intersection, camera, canvasHeight, br
     return 0.05
   }
   const distance = camera.position.distanceTo(intersection.point)
-  const fovRad = (camera.fov || 50) * Math.PI / 180
-  const worldPerPixel = (2 * Math.tan(fovRad / 2) * distance) / Math.max(1, canvasHeight)
+  const worldPerPixel = viewWorldHeightAt(camera, distance) / Math.max(1, canvasHeight)
   return Math.max(1e-4, (brushSizePx / 2) * worldPerPixel)
 }
 
@@ -416,6 +419,10 @@ export default function MeshEditorPage() {
   const [showShadows, setShowShadows] = useState(false)
   const [displayMode, setDisplayMode] = useState('pbr')
   const [showWireframe, setShowWireframe] = useState(false)
+  // Viewport projection. Perspective is the only safe default: Texturing and
+  // Projection bake THROUGH this camera and their framing math is perspective-only
+  // (see `cameraLockedToPerspective` below).
+  const [orthographic, setOrthographic] = useState(false)
   const [activeMenu, setActiveMenu] = useState('modeling')
   const [geometry, setGeometry] = useState(null)
   const [texturableMesh, setTexturableMesh] = useState(null)
@@ -831,6 +838,30 @@ export default function MeshEditorPage() {
       return 'pbr'
     })
   }
+
+  // Texturing and Projection are the two modes that PROJECT through the viewport
+  // camera rather than merely looking through it: `buildFramedProjectionCamera` fits
+  // the mesh with tan(fov/2) (an orthographic camera has no fov and never gets its
+  // frustum refit), `createProjectionRenderCamera` re-aims only `aspect` (which
+  // orthographic cameras do not have, so a square render target would come out
+  // stretched), and the GPU bake shader derives its per-texel view direction as
+  // `normalize(uProjectorPos - worldPos)` — true for a perspective projector, wrong
+  // for a parallel one. Any of those alone misregisters the ComfyUI render against
+  // the texture it is baked back into, so these modes stay on perspective.
+  const cameraLockedToPerspective = activeMenu === 'texturing' || activeMenu === 'projection'
+
+  // Texturing with a mask on screen freezes the camera: the mask is painted in
+  // SCREEN space against the current view, so orbiting would slide it off the mesh.
+  // The view cube is hidden along with orbiting — a snap-to-face is exactly the kind
+  // of camera move that would invalidate the mask.
+  const orbitEnabled = activeMenu !== 'texturing' || !hasProjectionMask
+
+  useEffect(() => {
+    if (cameraLockedToPerspective && orthographic) {
+      setOrthographic(false)
+      setFeedback('Switched back to a perspective view — Texturing and Projection project through the viewport camera.')
+    }
+  }, [cameraLockedToPerspective, orthographic])
 
   // --- Sculpting mode state ---
   // Brush kind: 'standard' is the only kernel wired up in this step. Smooth
@@ -1545,8 +1576,7 @@ export default function MeshEditorPage() {
     const camera = cameraRef.current;
     if (!camera || !worldHitPoint) return 24;
     const distance = camera.position.distanceTo(worldHitPoint);
-    const fovRad = (camera.fov || 50) * Math.PI / 180;
-    const worldHeightAtDistance = 2 * Math.tan(fovRad / 2) * distance;
+    const worldHeightAtDistance = viewWorldHeightAt(camera, distance);
     if (worldHeightAtDistance <= 0) return 24;
     return Math.max(4, (sculptSize / worldHeightAtDistance) * canvasHeight);
   }, [sculptSize]);
@@ -3233,6 +3263,14 @@ export default function MeshEditorPage() {
   }, [skeleton, animPreview, showSkeleton])
 
   const handleCanvasPointerDown = useCallback((event) => {
+    // The view cube lives inside the R3F canvas, so its clicks land here too (R3F's
+    // stopPropagation is scene-internal, not DOM). Bow out over its corner or a
+    // snap-to-face would also start a stroke / box selection / bone pick.
+    const shellRect = canvasShellRef.current?.getBoundingClientRect()
+    if (shellRect && isPointerOverViewGizmo(event.clientX - shellRect.left, event.clientY - shellRect.top, shellRect)) {
+      return
+    }
+
     // Right-click a bone to swap its gizmo between move and rotate (and select it, so
     // one gesture does both). Anywhere else the button still belongs to OrbitControls,
     // which pans with it.
@@ -3691,8 +3729,7 @@ export default function MeshEditorPage() {
         const dyPx = nextPoint.y - stroke.lastScreen.y
         if (Math.abs(dxPx) < 0.5 && Math.abs(dyPx) < 0.5) return
 
-        const fovRad = (camera.fov || 50) * Math.PI / 180
-        const worldHeightAtDist = 2 * Math.tan(fovRad / 2) * stroke.grabHitDistance
+        const worldHeightAtDist = viewWorldHeightAt(camera, stroke.grabHitDistance)
         const pxToWorld = worldHeightAtDist / Math.max(1, rect.height)
 
         // Camera basis in world space.
@@ -8391,6 +8428,18 @@ export default function MeshEditorPage() {
                       ? 'Albedo'
                       : 'Sculpt'}
                 </button>
+                <button
+                  type="button"
+                  className={`mesh-editor-btn ${orthographic ? 'mesh-editor-btn--secondary' : 'mesh-editor-btn--ghost'}`}
+                  onClick={() => setOrthographic(current => !current)}
+                  aria-pressed={orthographic}
+                  disabled={cameraLockedToPerspective}
+                  title={cameraLockedToPerspective
+                    ? 'Texturing and Projection project through the viewport camera, which only works in perspective.'
+                    : 'Switch the viewport between a perspective and an orthographic projection'}
+                >
+                  {orthographic ? 'Orthographic' : 'Perspective'}
+                </button>
                 {displayMode === 'sculpt' && (
                   <button
                     type="button"
@@ -8816,7 +8865,7 @@ export default function MeshEditorPage() {
                         canvas.addEventListener('webglcontextrestored', handleRestored, false)
                       }}
                     >
-                      <PerspectiveCamera makeDefault position={[3, 3, 5]} near={0.0001} far={4000} />
+                      <ViewportCameras orthographic={orthographic} />
                       <ambientLight intensity={displayMode === 'sculpt' ? 0.42 : 1.25} />
                       <directionalLight
                         position={displayMode === 'sculpt' ? [5, 7, 4] : [5, 7, 9]}
@@ -8962,10 +9011,11 @@ export default function MeshEditorPage() {
                         geometry={geometry}
                         frameKey={meshFrameKey}
                         onCameraReady={camera => { cameraRef.current = camera }}
-                        controlsEnabled={activeMenu !== 'texturing' || !hasProjectionMask}
+                        controlsEnabled={orbitEnabled}
                         allowPan={activeMenu !== 'projection' || !!projectionMaskEditLayerId}
                         lockToCenter={activeMenu === 'projection' && !projectionMaskEditLayerId}
                       />
+                      {orbitEnabled && <ViewGizmo />}
                     </Canvas>
                     {selectionBox && activeMenu === 'modeling' && (
                       <div
