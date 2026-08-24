@@ -621,7 +621,8 @@
 				{ "Node": "6", "Input": "image",  "Name": "Source Image", "Type": "Image" },
 				{ "Node": "209",  "Input": "value",  "Name": "Target Face Number",   "Type": "Number" },
 				{ "Node": "214",  "Input": "seed",  "Name": "Seed",   "Type": "Number" },
-				{ "Node": "258",  "Input": "to_resolution",  "Name": "Cascade Resolution",   "Type": "Number", "Enums":[1024,1536] }
+				{ "Node": "258",  "Input": "to_resolution",  "Name": "Cascade Resolution",   "Type": "Number", "Enums":[1024,1536] },
+				{ "Node": "39",  "Input": "backend",  "Name": "Backend",   "Type": "String", "Enums":["flash_attn","sdpa"] }
 			],
 			"Outputs": [
 				{ "Node": "232", "Name": "Save Mesh", "Type": "Mesh" }
@@ -635,7 +636,8 @@
 				{ "Node": "209",  "Input": "value",  "Name": "Target Face Number",   "Type": "Number" },
 				{ "Node": "214",  "Input": "seed",  "Name": "Seed",   "Type": "Number" },
 				{ "Node": "258",  "Input": "to_resolution",  "Name": "Cascade Resolution",   "Type": "Number", "Enums":[1024,1536] },
-				{ "Node": "261",  "Input": "texture_size",  "Name": "Texture Size",   "Type": "Number" }
+				{ "Node": "261",  "Input": "texture_size",  "Name": "Texture Size",   "Type": "Number" },
+				{ "Node": "39",  "Input": "backend",  "Name": "Backend",   "Type": "String", "Enums":["flash_attn","sdpa"] }
 			],
 			"Outputs": [
 				{ "Node": "232", "Name": "Save Mesh", "Type": "Mesh" }
@@ -779,7 +781,8 @@
 				{ "Node": "1", "Input": "right",  "Name": "Right Image", "Type": "Image" },
 				{ "Node": "4",  "Input": "target_face_num",  "Name": "Target Face Number",   "Type": "Number" },
 				{ "Node": "10",  "Input": "seed",  "Name": "Seed",   "Type": "Number" },
-				{ "Node": "14",  "Input": "to_resolution",  "Name": "Cascade Resolution",   "Type": "Number", "Enums":[1024,1536] }
+				{ "Node": "14",  "Input": "to_resolution",  "Name": "Cascade Resolution",   "Type": "Number", "Enums":[1024,1536] },
+				{ "Node": "2",  "Input": "backend",  "Name": "Backend",   "Type": "String", "Enums":["flash_attn","sdpa"] }
 			],
 			"Outputs": [
 				{ "Node": "9", "Name": "Save Mesh", "Type": "Mesh" }
@@ -795,7 +798,8 @@
 				{ "Node": "1", "Input": "right",  "Name": "Right Image", "Type": "Image" },
 				{ "Node": "17", "Input": "glb_path",  "Name": "Source Mesh", "Type": "Mesh" },
 				{ "Node": "16",  "Input": "texture_size",  "Name": "Texture Size",   "Type": "Number" },
-				{ "Node": "16",  "Input": "resolution",  "Name": "Resolution",   "Type": "Number", "Enums":[1024,1536] }
+				{ "Node": "16",  "Input": "resolution",  "Name": "Resolution",   "Type": "Number", "Enums":[1024,1536] },
+				{ "Node": "2",  "Input": "backend",  "Name": "Backend",   "Type": "String", "Enums":["flash_attn","sdpa"] }
 			],
 			"Outputs": [
 				{ "Node": "19", "Name": "Output Mesh", "Type": "Mesh" }
