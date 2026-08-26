@@ -13,8 +13,7 @@
 }
 
 .assets-page__container {
-  max-width: 1280px;
-  margin: 0 auto;
+  width: 100%;
   display: flex;
   flex-direction: column;
   gap: 2rem;
@@ -779,13 +778,18 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.75rem;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  min-width: 0;
 }
 
 .asset-card__actions {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  min-width: 0;
 }
 
 .asset-card__edits-btn {
@@ -821,9 +825,11 @@
 }
 
 .asset-card__link {
+  flex: none;
   color: var(--on-surface-variant);
   font-size: 0.72rem;
   letter-spacing: 0.08em;
+  white-space: nowrap;
 }
 
 .asset-card__link-btn {
@@ -840,13 +846,18 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  flex: none;
+  width: 30px;
+  height: 30px;
   border: 1px solid rgba(71, 72, 74, 0.22);
   border-radius: var(--radius-full);
   background: var(--surface-container-high);
   color: var(--on-surface-variant);
   cursor: pointer;
+}
+
+.asset-card__icon-btn .material-symbols-outlined {
+  font-size: 18px;
 }
 
 .asset-card__icon-btn:hover:not(:disabled) {
