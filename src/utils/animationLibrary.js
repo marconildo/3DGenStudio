@@ -23,6 +23,7 @@ export const ANIMATION_REFERENCES = [
   { id: 'bird', label: 'Bird', dir: 'bird', glbs: ['bird-animations.glb'] },
   { id: 'dragon', label: 'Dragon', dir: 'dragon', glbs: ['dragon-animations.glb'] },
   { id: 'fox', label: 'Fox', dir: 'fox', glbs: ['fox-animations.glb'] },
+  { id: 'horse', label: 'Horse', dir: 'horse', glbs: ['horse-animations.glb'] },
   { id: 'kaiju', label: 'Kaiju', dir: 'kaiju', glbs: ['kaiju-animations.glb'] },
   { id: 'shark', label: 'Shark', dir: 'shark', glbs: ['shark-animations.glb'] },
   { id: 'snake', label: 'Snake', dir: 'snake', glbs: ['snake-animations.glb'] },
