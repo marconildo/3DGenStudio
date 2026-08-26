@@ -1852,6 +1852,19 @@ export default function KanbanPage() {
     return `asset:${visibleAsset.id}`
   }
 
+  // Default value for a card-level asset dropdown (ComfyUI file parameters, the
+  // Auto Rig "Mesh" picker): the asset the card is actually displaying, falling
+  // back to the card's first asset of that type. Returns '' when the card holds
+  // no asset of that type.
+  const resolveDefaultCardSourceValue = (card, valueType) => {
+    const sourceGroups = getCardFileSourceGroups(card, valueType)
+    const displayedSource = getCardDisplayedSourceValue(card, valueType)
+    const isSelectable = displayedSource
+      && sourceGroups.some(group => group.options.some(option => option.value === displayedSource))
+
+    return (isSelectable ? displayedSource : sourceGroups[0]?.options?.[0]?.value) || ''
+  }
+
   const createImageEditInputBindings = (card, workflow) => {
     return Object.fromEntries((workflow?.parameters || []).map(parameter => {
       const valueType = getWorkflowParameterValueType(parameter)
@@ -1861,13 +1874,8 @@ export default function KanbanPage() {
         // first asset of that type. With no asset of that type on the card there is
         // nothing to preselect, so the parameter starts on "None" — the one source
         // that is always valid.
-        const sourceGroups = getCardFileSourceGroups(card, valueType)
-        const displayedSource = getCardDisplayedSourceValue(card, valueType)
-        const isSelectable = displayedSource
-          && sourceGroups.some(group => group.options.some(option => option.value === displayedSource))
-        const defaultSource = (isSelectable ? displayedSource : sourceGroups[0]?.options?.[0]?.value) || WORKFLOW_INPUT_NONE
         return [parameter.id, {
-          source: defaultSource,
+          source: resolveDefaultCardSourceValue(card, valueType) || WORKFLOW_INPUT_NONE,
           customValue: ''
         }]
       }
@@ -1936,8 +1944,11 @@ export default function KanbanPage() {
       name: '',
       selectedApi: defaultSelectedApi,
       prompt: '',
+      // Mesh columns (Mesh Edit / Texturing / Rigging) preselect the mesh the card
+      // is currently showing — e.g. Auto Rig targets the displayed version, not
+      // always the card's first mesh.
       selectedAssetId: [4, 5, 6].includes(card.kanbanColumnId)
-        ? (card.meshAssets[0]?.id ? `asset:${card.meshAssets[0].id}` : '')
+        ? resolveDefaultCardSourceValue(card, 'mesh')
         : (card.assets[0]?.id ? `asset:${card.assets[0].id}` : ''),
       workflowId: initialWorkflow?.id || '',
       inputBindings: createImageEditInputBindings(card, initialWorkflow),
