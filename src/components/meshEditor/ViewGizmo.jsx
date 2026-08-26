@@ -1,6 +1,7 @@
 // Blender-style view cube in the top-right of the mesh-editor viewport. Clicking a
 // face, edge or corner tweens the camera onto that axis — drei drives the tween
 // through the `makeDefault` OrbitControls that CameraRig owns, so no extra wiring.
+// Double-clicking does that AND fits the mesh to the viewport (see handleDoubleClick).
 //
 // GizmoHelper renders through drei's Hud, which takes over the render loop at
 // priority 1: it draws the main scene, clears depth, then draws the cube on top. All
@@ -8,11 +9,12 @@
 // the default priority 0 and so still runs first, in the order it always did.
 //
 // Its pointer footprint is guarded on the DOM side — see utils/viewGizmoLayout.
-import { useCallback, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import { GizmoHelper, GizmoViewcube } from '@react-three/drei'
 import * as THREE from 'three'
-import { VIEW_GIZMO_MARGIN } from '../../utils/viewGizmoLayout'
+import { VIEW_GIZMO_MARGIN, isPointerOverViewGizmo } from '../../utils/viewGizmoLayout'
+import { fitCameraToSphere, meshFittingSphere } from '../../utils/cameraFraming'
 
 // GizmoHelper measures the orbit radius for a snap from the WORLD ORIGIN, not from
 // the controls' target — it distances against a Vector3 that is never assigned. Our
@@ -36,9 +38,11 @@ function SnapRadiusKeeper({ radiusRef }) {
   return null
 }
 
-export default function ViewGizmo() {
+export default function ViewGizmo({ geometry }) {
   const camera = useThree(state => state.camera)
   const controls = useThree(state => state.controls)
+  const gl = useThree(state => state.gl)
+  const invalidate = useThree(state => state.invalidate)
   const radiusRef = useRef(0)
   const offsetRef = useRef(new THREE.Vector3())
 
@@ -56,6 +60,39 @@ export default function ViewGizmo() {
     }
     controls?.update?.()
   }, [camera, controls])
+
+  // A double-click is "snap to this axis AND fill the viewport with the mesh". The two
+  // clicks underneath it have already started the snap tween, so this only has to put
+  // the orbit target back on the mesh and pull the eye in to the fitted distance.
+  //
+  // It listens on the canvas rather than overriding GizmoViewcube's `onClick`, because
+  // that prop replaces the built-in handler on every face, edge and corner at once —
+  // the snap itself would have to be reimplemented to keep it. The hit test is the
+  // same square MeshEditorPage uses to keep gizmo clicks out of its brush handlers.
+  const handleDoubleClick = useCallback(event => {
+    const rect = gl.domElement?.getBoundingClientRect()
+    if (!rect || !isPointerOverViewGizmo(event.clientX - rect.left, event.clientY - rect.top, rect)) {
+      return
+    }
+    const sphere = meshFittingSphere(geometry)
+    if (!sphere) {
+      return
+    }
+    // An in-flight tween re-reads the orbit target every step (drei holds the very
+    // same Vector3), and `radiusRef` is what our onUpdate re-seats the eye at — so
+    // writing both here lands the tween on the fitted view instead of fighting it.
+    radiusRef.current = fitCameraToSphere(camera, controls, sphere)
+    invalidate()
+  }, [camera, controls, geometry, gl, invalidate])
+
+  useEffect(() => {
+    const canvas = gl.domElement
+    if (!canvas) {
+      return undefined
+    }
+    canvas.addEventListener('dblclick', handleDoubleClick)
+    return () => canvas.removeEventListener('dblclick', handleDoubleClick)
+  }, [gl, handleDoubleClick])
 
   return (
     <>

@@ -2,13 +2,7 @@ import { useEffect, useRef } from 'react'
 import { useThree } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
 import * as THREE from 'three'
-
-// World height the framed view shows, in bounding-sphere radii — how the
-// orthographic fit below is expressed, since it has no distance to frame by.
-// Matched to what the perspective framing produces so a mesh loads looking the same
-// under either projection: the eye lands at (d, 0.65d, d) from the centre with
-// d = 2.6r, i.e. 4.05r away, and a 50° vertical fov spans 2*tan(25°)*4.05r ≈ 3.8r.
-const FRAMED_SPHERE_SPAN = 3.8
+import { FRAME_EYE_OFFSET, framedOrthoZoom, FRAMED_SPHERE_SPAN } from '../../utils/cameraFraming'
 
 // R3F scene helper extracted from MeshEditorPage.jsx (behaviour-preserving move).
 export default function CameraRig({ geometry, frameKey, onCameraReady, controlsEnabled = true, allowPan = true, lockToCenter = false }) {
@@ -37,11 +31,14 @@ export default function CameraRig({ geometry, frameKey, onCameraReady, controlsE
     const sphere = geometry.boundingSphere
     const radius = Math.max(sphere?.radius || 1, 1)
     const center = sphere?.center || new THREE.Vector3()
-    const distance = radius * 2.6
     const minDistance = Math.max(radius * 0.0025, 0.0005)
     const maxDistance = Math.max(radius * 24, 24)
 
-    camera.position.set(center.x + distance, center.y + distance * 0.65, center.z + distance)
+    camera.position.set(
+      center.x + radius * FRAME_EYE_OFFSET[0],
+      center.y + radius * FRAME_EYE_OFFSET[1],
+      center.z + radius * FRAME_EYE_OFFSET[2]
+    )
 
     Object.assign(camera, {
       near: Math.max(radius * 0.00005, 0.0001),
@@ -51,7 +48,7 @@ export default function CameraRig({ geometry, frameKey, onCameraReady, controlsE
       // The position above still matters: it is the eye the view direction and the
       // orbit radius come from.
       ...(camera.isOrthographicCamera
-        ? { zoom: Math.abs(camera.top - camera.bottom) / Math.max(radius * FRAMED_SPHERE_SPAN, 1e-6) }
+        ? { zoom: framedOrthoZoom(camera, radius) }
         : null)
     })
     camera.lookAt(center)
