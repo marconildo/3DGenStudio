@@ -502,20 +502,34 @@
   border-radius: 8px;
 }
 
+/* Four tabs no longer fit side by side as icon+label rows in this column, so the
+   label moves under the icon. min-width:0 lets the flex children actually shrink
+   — without it the longest label ("Animations") sets the floor and the bar
+   overflows the panel. */
 .mesh-editor-skeleton-panel__tab {
-  flex: 1;
+  flex: 1 1 0;
+  min-width: 0;
   display: inline-flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 0.35rem;
-  padding: 0.4rem 0.6rem;
+  gap: 0.15rem;
+  padding: 0.4rem 0.25rem;
   border: none;
   background: transparent;
   color: var(--on-surface-variant);
   border-radius: 6px;
   cursor: pointer;
-  font-size: 0.82rem;
+  font-size: 0.7rem;
   font-weight: 600;
+  line-height: 1.1;
+}
+
+.mesh-editor-skeleton-panel__tab > span:last-child {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mesh-editor-skeleton-panel__tab:hover {
@@ -530,7 +544,7 @@
 }
 
 .mesh-editor-skeleton-panel__tab .material-symbols-outlined {
-  font-size: 1.05rem;
+  font-size: 1.15rem;
 }
 
 .mesh-editor-skeleton-panel__body {

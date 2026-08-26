@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Launch 3D Gen Studio on Linux / macOS (the cross-platform counterpart of
 # run.bat). Starts the Vite dev server + Node backend, the Python mesh-tools
-# service, and the SkinTokens rigging service (Linux only — it self-skips on
-# macOS), each logging to its own file, then opens the app in the browser.
+# service, the SkinTokens rigging service and the MoCapAnything video-to-motion
+# service (both Linux only — they self-skip on macOS), each logging to its own
+# file, then opens the app in the browser.
 #
 # First launch is slow: the Python services build their uv virtual environments
 # and download dependencies + model checkpoints in the background.
@@ -18,6 +19,9 @@ echo "Starting Python mesh-tools service -> python-server/python-server.log"
 echo "Starting SkinTokens rigging service -> thirdparty/skintokens/rig-server.log"
 ( cd thirdparty/skintokens && bash run_server.sh > rig-server.log 2>&1 ) &
 
+echo "Starting MoCapAnything video-to-motion service -> thirdparty/mocapanything/mocap-server.log"
+( cd thirdparty/mocapanything && bash run_server.sh > mocap-server.log 2>&1 ) &
+
 # Give Vite + the backend a moment to come up.
 sleep 3
 
@@ -31,6 +35,6 @@ else
 fi
 
 echo
-echo "3D Gen Studio is starting. Logs: dev.log, python-server/python-server.log, thirdparty/skintokens/rig-server.log"
+echo "3D Gen Studio is starting. Logs: dev.log, python-server/python-server.log, thirdparty/skintokens/rig-server.log, thirdparty/mocapanything/mocap-server.log"
 echo "Press Ctrl+C to stop the dev server (background services keep running; close their windows/processes to stop them)."
 wait

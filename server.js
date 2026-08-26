@@ -1168,6 +1168,26 @@ function buildMotionToolsBaseUrl(settings = {}) {
   return parsedUrl.toString().replace(/\/$/, '');
 }
 
+// Base URL of the video-to-motion micro-service
+// (thirdparty/mocapanything/mocap_server.py). A fourth GPU service on its own
+// host/port: MoCapAnything pins torch 2.9 / transformers 4.57, which neither the
+// Kimodo venv (transformers 5.1.0) nor the rigging venv (5.13) can satisfy.
+// Mirrors buildMotionToolsBaseUrl.
+function buildMocapToolsBaseUrl(settings = {}) {
+  const mocapSettings = settings?.apis?.mocaptools || {};
+  const rawUrl = String(mocapSettings.url || 'http://127.0.0.1').trim();
+  const normalizedUrl = /^https?:\/\//i.test(rawUrl) ? rawUrl : `http://${rawUrl}`;
+  const parsedUrl = new URL(normalizedUrl);
+  const port = String(mocapSettings.port || parsedUrl.port || '8401').trim();
+
+  parsedUrl.port = port;
+  parsedUrl.pathname = '';
+  parsedUrl.search = '';
+  parsedUrl.hash = '';
+
+  return parsedUrl.toString().replace(/\/$/, '');
+}
+
 function buildComfyUiWebSocketUrl(baseUrl, clientId) {
   const parsedUrl = new URL(baseUrl);
   const currentPath = parsedUrl.pathname && parsedUrl.pathname !== '/' ? parsedUrl.pathname.replace(/\/$/, '') : '';
@@ -7059,6 +7079,125 @@ app.get('/api/motions/health', async (req, res) => {
       error: `Could not reach the motion service at ${baseUrl}.`,
       baseUrl,
     });
+  }
+});
+
+// --- Video-to-motion (MoCapAnything V2) -------------------------------------
+// Two-step by nature, and the UI depends on the distinction: a video can only
+// drive a rig that has been BAKED first (skeleton topology, joint-name
+// embeddings, a reference pose and a rendered view). The bake needs Blender and
+// takes minutes; it is cached by mesh content hash, so it is once per rig rather
+// than once per clip. /inspect is the cheap "is this mesh already baked?" probe
+// the panel calls on open.
+async function proxyMocapTool(operationPath, req, res, { field, fields = {}, serviceLabel = 'Video to Motion' } = {}) {
+  const file = req.file;
+  if (!file?.buffer?.length) {
+    return res.status(400).json({ error: `${field} is required` });
+  }
+
+  const settings = await getSettings();
+  const baseUrl = buildMocapToolsBaseUrl(settings);
+
+  const form = new FormData();
+  form.append(
+    field,
+    new Blob([file.buffer], { type: file.mimetype || 'application/octet-stream' }),
+    file.originalname || (field === 'videoFile' ? 'clip.mp4' : 'mesh.glb'),
+  );
+  for (const [key, value] of Object.entries(fields)) {
+    if (value != null && String(value).length) form.append(key, String(value));
+  }
+
+  let upstream;
+  try {
+    upstream = await fetch(`${baseUrl}${operationPath}`, { method: 'POST', body: form });
+  } catch (err) {
+    console.error(`MoCap proxy (${operationPath}) could not reach the Python service:`, err);
+    return res.status(502).json({
+      error: `Could not reach the ${serviceLabel} (Python) service at ${baseUrl}. `
+        + 'Is it running? (Preparing a rig also needs Blender.)',
+    });
+  }
+
+  if (!upstream.ok) {
+    const detail = await upstream.text().catch(() => '');
+    return res.status(upstream.status).json({
+      error: `Video-to-motion failed (${upstream.status})`,
+      detail: detail.slice(0, 2000),
+    });
+  }
+
+  // /inspect answers with a plain JSON body, not a stream.
+  const contentType = upstream.headers.get('content-type') || '';
+  if (!contentType.includes('text/event-stream')) {
+    return res.json(await upstream.json());
+  }
+  return pipeToolSse(operationPath, upstream, res);
+}
+
+app.post('/api/mocap/inspect', meshToolsUpload.single('meshFile'), async (req, res) => {
+  try {
+    await proxyMocapTool('/mocap/inspect', req, res, {
+      field: 'meshFile',
+      fields: { rigKey: req.body?.rigKey },
+    });
+  } catch (error) {
+    console.error('MoCap inspect failed:', error);
+    if (!res.headersSent) res.status(500).json({ error: 'MoCap inspect failed' });
+  }
+});
+
+app.post('/api/mocap/prepare', meshToolsUpload.single('meshFile'), async (req, res) => {
+  try {
+    await proxyMocapTool('/mocap/prepare', req, res, {
+      field: 'meshFile',
+      fields: { rigName: req.body?.rigName || 'rig', rigKey: req.body?.rigKey },
+    });
+  } catch (error) {
+    console.error('MoCap prepare failed:', error);
+    if (!res.headersSent) res.status(500).json({ error: 'MoCap prepare failed' });
+  }
+});
+
+app.post('/api/mocap/generate', meshToolsUpload.single('videoFile'), async (req, res) => {
+  try {
+    await proxyMocapTool('/mocap/generate', req, res, {
+      field: 'videoFile',
+      fields: { rigId: req.body?.rigId, maxFrames: req.body?.maxFrames },
+    });
+  } catch (error) {
+    console.error('MoCap generate failed:', error);
+    if (!res.headersSent) res.status(500).json({ error: 'MoCap generate failed' });
+  }
+});
+
+// Lets the MoCap panel say "the service isn't running", and — just as important
+// — whether Blender is present, before the user picks a video and waits.
+app.get('/api/mocap/health', async (req, res) => {
+  const settings = await getSettings();
+  const baseUrl = buildMocapToolsBaseUrl(settings);
+  try {
+    const upstream = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(5000) });
+    if (!upstream.ok) {
+      return res.status(502).json({ error: `MoCap service returned ${upstream.status}`, baseUrl });
+    }
+    return res.json(await upstream.json());
+  } catch {
+    return res.status(502).json({ error: `Could not reach the MoCap service at ${baseUrl}.`, baseUrl });
+  }
+});
+
+app.delete('/api/mocap/rigs/:rigId', async (req, res) => {
+  const settings = await getSettings();
+  const baseUrl = buildMocapToolsBaseUrl(settings);
+  try {
+    const upstream = await fetch(`${baseUrl}/mocap/rigs/${encodeURIComponent(req.params.rigId)}`, {
+      method: 'DELETE',
+      signal: AbortSignal.timeout(15000),
+    });
+    return res.status(upstream.status).json(await upstream.json().catch(() => ({})));
+  } catch {
+    return res.status(502).json({ error: `Could not reach the MoCap service at ${baseUrl}.` });
   }
 });
 

@@ -105,6 +105,22 @@ files:
   # CMake build tree from a local MotionCorrection build; rebuilt per install.
   - "!thirdparty/kimodo/MotionCorrection/build/**"
   - "!thirdparty/kimodo/**/*.egg-info/**"
+  # Video to motion (opt-in). Ships the service AND the vendored MoCapAnything
+  # model source (~8 MB) so nothing is cloned at install time; the venv (which
+  # includes the 323 MB bpy wheel) and the 460 MB checkpoint are provisioned
+  # into the per-user data dir on opt-in.
+  - thirdparty/mocapanything/**/*
+  - "!thirdparty/mocapanything/.venv/**"
+  - "!thirdparty/mocapanything/**/__pycache__/**"
+  # Downloads and derived state, all re-created per user.
+  - "!thirdparty/mocapanything/**/checkpoints/**"
+  - "!thirdparty/mocapanything/*.log"
+  # Scratch trees a dev run leaves behind: the per-rig bake inputs/outputs when
+  # MOCAP_DATA_DIR was not set, and the FBX staging folder.
+  - "!thirdparty/mocapanything/zoo/**"
+  - "!thirdparty/mocapanything/Truebone_Z-OO/**"
+  - "!thirdparty/mocapanything/videos/**"
+  - "!thirdparty/mocapanything/outputs/**"
   # MAX_PATH. asar:false ships node_modules as real files, and npm nests a
   # duplicate @radix-ui chain inside @excalidraw:
   #   resources/app/node_modules/@excalidraw/excalidraw/node_modules/@radix-ui/

@@ -65,3 +65,20 @@ thirdparty/kimodo/text-encoder/
 thirdparty/kimodo/*.egg-info/
 thirdparty/kimodo/MotionCorrection/build/
 thirdparty/kimodo/MotionCorrection/*.egg-info/
+
+# MoCapAnything video-to-motion service — generated / downloaded artifacts.
+# The service source AND the vendored model tree (MocapAnything/, ~8 MB) ARE
+# committed; only what is downloaded or produced at runtime is not.
+thirdparty/mocapanything/.venv/
+thirdparty/mocapanything/*.log
+# The 460 MB checkpoint, wherever it lands. Nested because the vendored tree is
+# MocapAnything/checkpoints/ while an override can put it directly under the
+# service folder — the same rule electron-builder.yml uses to keep it out of the
+# installer.
+thirdparty/mocapanything/**/checkpoints/
+# Per-rig bakes and their inputs when MOCAP_DATA_DIR is not set (a dev run writes
+# them here): the preprocessing tree, the staged FBX, input clips and results.
+thirdparty/mocapanything/zoo/
+thirdparty/mocapanything/Truebone_Z-OO/
+thirdparty/mocapanything/videos/
+thirdparty/mocapanything/outputs/

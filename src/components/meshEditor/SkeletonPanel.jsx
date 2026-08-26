@@ -378,6 +378,90 @@ function ClipGallery({ animation, emptyLabel, previewsAvailable = true }) {
   )
 }
 
+// Hold the fingers in a chosen pose, for the tabs whose source never animates
+// them. Shared by Kimodo and MoCap because the reason is the same in both and
+// the controls are fiddly enough (per-hand, separate thumbs, a thumb axis that
+// cannot be deduced reliably) that two copies would drift apart.
+//
+// This produces ONE CONSTANT POSE held for the whole clip, not animation. It is
+// applied downstream by withHandPose, which only needs the HAND to be mapped —
+// it walks the finger chains off the hand bone itself — so it works even when
+// the finger bones are not being driven.
+function HandCurlControls({ animation, hand, note }) {
+  if (!animation?.hasMapping) return null
+  const curl = hand?.handCurl
+
+  return (
+    <div className="mesh-editor-anim__arms">
+      <div className="mesh-editor-anim__arms-head">
+        <span className="mesh-editor-panel__hint">Hand curl (open → fist)</span>
+        <button
+          type="button"
+          className="mesh-editor-anim__arms-reset"
+          onClick={() => { hand?.onHandCurlReset?.(); hand?.onHandCurlCommit?.() }}
+          title="Both hands back to the mesh's own pose"
+        >
+          <span className="material-symbols-outlined">restart_alt</span>
+        </button>
+      </div>
+      {/* Separate per hand: a punch is a fist on one side and an open guard on
+          the other, and one slider cannot express that. */}
+      {[
+        { side: 'left', label: 'Left' },
+        { side: 'leftThumb', label: '— thumb' },
+        { side: 'right', label: 'Right' },
+        { side: 'rightThumb', label: '— thumb' },
+      ].map(({ side, label }) => (
+        <div className="mesh-editor-anim__arms-row" key={side}>
+          <span className="mesh-editor-panel__hint" style={{ minWidth: '4.2em' }}>{label}</span>
+          <input
+            type="range" min="0" max="100" step="1"
+            value={curl?.[side] ?? 0}
+            onChange={e => hand?.onHandCurlChange?.(side, Number(e.target.value))}
+            // Rebaking on every pixel of drag would be unusable, so the clip is
+            // only rebuilt once the slider is let go.
+            onPointerUp={() => hand?.onHandCurlCommit?.()}
+            onKeyUp={() => hand?.onHandCurlCommit?.()}
+            disabled={!!animation?.retargeting}
+            aria-label={`${side.includes('Thumb') ? `${side.replace('Thumb', '')} thumb` : `${label} hand`} curl`}
+          />
+          <span className="mesh-editor-anim__arms-val">{curl?.[side] ?? 0}%</span>
+        </div>
+      ))}
+      {/* Which local axis a thumb folds about is a rig convention, and deducing
+          it from geometry failed on real rigs several times over. Auto still
+          tries; these are here so a wrong guess costs a click rather than
+          another round of heuristics. */}
+      <div className="mesh-editor-anim__arms-row">
+        <span className="mesh-editor-panel__hint" style={{ minWidth: '4.2em' }}>Axis</span>
+        <select
+          className="mesh-editor-panel__input mesh-editor-panel__select"
+          value={curl?.thumbAxis || 'auto'}
+          onChange={e => { hand?.onHandCurlChange?.('thumbAxis', e.target.value); hand?.onHandCurlCommit?.() }}
+          disabled={!!animation?.retargeting}
+          title="If the thumb folds the wrong way, try the other axes"
+        >
+          <option value="auto">Auto</option>
+          <option value="x">Local X</option>
+          <option value="y">Local Y</option>
+          <option value="z">Local Z</option>
+        </select>
+        <button
+          type="button"
+          className={`mesh-editor-anim__floor-btn ${curl?.thumbFlip ? 'mesh-editor-anim__floor-btn--on' : ''}`}
+          style={{ flex: '0 0 auto' }}
+          onClick={() => { hand?.onHandCurlChange?.('thumbFlip', !curl?.thumbFlip); hand?.onHandCurlCommit?.() }}
+          aria-pressed={!!curl?.thumbFlip}
+          title="Fold the thumb the other way"
+        >
+          <span className="material-symbols-outlined">swap_horiz</span>
+        </button>
+      </div>
+      <span className="mesh-editor-panel__hint">{note}</span>
+    </div>
+  )
+}
+
 // "Kimodo" tab: describe a motion, get an animation.
 //
 // The generated clip is retargeted through the same machinery as a library clip,
@@ -584,81 +668,14 @@ function KimodoTab({ animation, kimodo }) {
 
           {/* Kimodo animates no fingers at all — it solves a 30-joint skeleton and
               fills every knuckle from one fixed relaxed pose — so a punch lands
-              with whatever hand the mesh was modelled with. This holds them in a
-              chosen pose instead. It is one constant pose, not animation. */}
-          {animation?.hasMapping && (
-            <div className="mesh-editor-anim__arms">
-              <div className="mesh-editor-anim__arms-head">
-                <span className="mesh-editor-panel__hint">Hand curl (open → fist)</span>
-                <button
-                  type="button"
-                  className="mesh-editor-anim__arms-reset"
-                  onClick={() => { k.onHandCurlReset?.(); k.onHandCurlCommit?.() }}
-                  title="Both hands back to the mesh's own pose"
-                >
-                  <span className="material-symbols-outlined">restart_alt</span>
-                </button>
-              </div>
-              {/* Separate per hand: a punch is a fist on one side and an open
-                  guard on the other, and one slider cannot express that. */}
-              {[
-                { side: 'left', label: 'Left' },
-                { side: 'leftThumb', label: '— thumb' },
-                { side: 'right', label: 'Right' },
-                { side: 'rightThumb', label: '— thumb' },
-              ].map(({ side, label }) => (
-                <div className="mesh-editor-anim__arms-row" key={side}>
-                  <span className="mesh-editor-panel__hint" style={{ minWidth: '4.2em' }}>{label}</span>
-                  <input
-                    type="range" min="0" max="100" step="1"
-                    value={k.handCurl?.[side] ?? 0}
-                    onChange={e => k.onHandCurlChange?.(side, Number(e.target.value))}
-                    // Rebaking on every pixel of drag would be unusable, so the
-                    // clip is only rebuilt once the slider is let go.
-                    onPointerUp={() => k.onHandCurlCommit?.()}
-                    onKeyUp={() => k.onHandCurlCommit?.()}
-                    disabled={!!animation?.retargeting}
-                    aria-label={`${side.includes('Thumb') ? `${side.replace('Thumb', '')} thumb` : `${label} hand`} curl`}
-                  />
-                  <span className="mesh-editor-anim__arms-val">{k.handCurl?.[side] ?? 0}%</span>
-                </div>
-              ))}
-              {/* Which local axis a thumb folds about is a rig convention, and
-                  deducing it from geometry failed on real rigs several times over.
-                  Auto still tries; these are here so a wrong guess costs a click
-                  rather than another round of heuristics. */}
-              <div className="mesh-editor-anim__arms-row">
-                <span className="mesh-editor-panel__hint" style={{ minWidth: '4.2em' }}>Axis</span>
-                <select
-                  className="mesh-editor-panel__input mesh-editor-panel__select"
-                  value={k.handCurl?.thumbAxis || 'auto'}
-                  onChange={e => { k.onHandCurlChange?.('thumbAxis', e.target.value); k.onHandCurlCommit?.() }}
-                  disabled={!!animation?.retargeting}
-                  title="If the thumb folds the wrong way, try the other axes"
-                >
-                  <option value="auto">Auto</option>
-                  <option value="x">Local X</option>
-                  <option value="y">Local Y</option>
-                  <option value="z">Local Z</option>
-                </select>
-                <button
-                  type="button"
-                  className={`mesh-editor-anim__floor-btn ${k.handCurl?.thumbFlip ? 'mesh-editor-anim__floor-btn--on' : ''}`}
-                  style={{ flex: '0 0 auto' }}
-                  onClick={() => { k.onHandCurlChange?.('thumbFlip', !k.handCurl?.thumbFlip); k.onHandCurlCommit?.() }}
-                  aria-pressed={!!k.handCurl?.thumbFlip}
-                  title="Fold the thumb the other way"
-                >
-                  <span className="material-symbols-outlined">swap_horiz</span>
-                </button>
-              </div>
-              <span className="mesh-editor-panel__hint">
-                Kimodo never moves fingers, so this is a fixed pose held for the whole clip.
-                If the thumb folds the wrong way, change its axis above — which one a rig uses
-                is a convention, not something that can be read off the shape.
-              </span>
-            </div>
-          )}
+              with whatever hand the mesh was modelled with. */}
+          <HandCurlControls
+            animation={animation}
+            hand={k}
+            note={'Kimodo never moves fingers, so this is a fixed pose held for the whole clip. '
+              + 'If the thumb folds the wrong way, change its axis above — which one a rig uses '
+              + 'is a convention, not something that can be read off the shape.'}
+          />
 
           {/* Kimodo generates no mp4 previews, so the tiles fall back to an icon. */}
           <ClipGallery
@@ -672,7 +689,227 @@ function KimodoTab({ animation, kimodo }) {
   )
 }
 
-export default function SkeletonPanel({ skeleton, selectedBone, onSelectBone, animation, kimodo, edit }) {
+// "MoCap" tab: drive this rig with a video of something moving.
+//
+// Two steps, and the tab is honest that the first one exists. A video can only
+// drive a rig that has been PREPARED (skeleton topology, joint-name embeddings,
+// a reference pose, a rendered view) — minutes of Blender, cached per rig.
+// Hiding that behind the Capture button would turn the first run into a long
+// wait with no explanation.
+//
+// What that buys is a result needing no bone mapping at all: the service is
+// conditioned on this rig, so the clip comes back on these exact bone names.
+// That is why there is no "Map bones" step here and one in every other tab.
+function MoCapTab({ animation, mocap }) {
+  const m = mocap || {}
+  const busy = !!m.running || !!m.preparing
+  const ready = !!m.rigId && !!m.prepared
+
+  return (
+    <div className="mesh-editor-skeleton-panel__body mesh-editor-skeleton-panel__body--scroll">
+      {m.serviceError && (
+        <div className="mesh-editor-feedback mesh-editor-feedback--error mesh-editor-anim__error">
+          <span className="material-symbols-outlined">error</span>
+          <span>{m.serviceError}</span>
+        </div>
+      )}
+
+      {/* Step 1 — the bake. Shown as done rather than hidden once it is: the
+          user should be able to see this rig is ready, and redo it after
+          editing the skeleton. */}
+      <div className="mesh-editor-panel__section">
+        <span className="mesh-editor-panel__section-title">1 &middot; Prepare this rig</span>
+
+        {ready ? (
+          <div className="mesh-editor-panel__hint" style={{ display: 'flex', alignItems: 'center', gap: '0.4em' }}>
+            <span className="material-symbols-outlined" style={{ fontSize: '1.1em', color: '#4caf50' }}>check_circle</span>
+            <span>Rig prepared &mdash; {m.preparedJoints} bones. Videos can drive it now.</span>
+          </div>
+        ) : (
+          <span className="mesh-editor-panel__hint">
+            The rig is analysed once so a video can be mapped onto it: its skeleton, a reference
+            pose and a rendered view. Takes a few minutes and needs Blender. The result is cached,
+            so you wait once per mesh, not once per video.
+          </span>
+        )}
+
+        {m.staleRig && ready && (
+          <div className="mesh-editor-panel__hint" style={{ display: 'flex', alignItems: 'center', gap: '0.4em', color: '#e0a030' }}>
+            <span className="material-symbols-outlined" style={{ fontSize: '1.1em' }}>warning</span>
+            <span>
+              The mesh changed since it was prepared. Prepare it again, or the capture will follow
+              the old skeleton.
+            </span>
+          </div>
+        )}
+
+        <button
+          type="button"
+          className={ready ? 'mesh-editor-btn' : 'mesh-editor-btn mesh-editor-btn--primary'}
+          onClick={m.onPrepare}
+          disabled={busy || !m.canPrepare}
+          title={ready ? 'Analyse this rig again' : 'Analyse this rig so videos can drive it'}
+        >
+          <span className="material-symbols-outlined">
+            {m.preparing ? 'progress_activity' : (ready ? 'refresh' : 'precision_manufacturing')}
+          </span>
+          <span>{m.preparing ? 'Preparing…' : (ready ? 'Prepare again' : 'Prepare rig')}</span>
+        </button>
+
+        {m.preparing && <MeshToolProgress progress={m.prepareProgress} />}
+      </div>
+
+      {/* Step 2 — the clip. */}
+      <div className="mesh-editor-panel__section">
+        <span className="mesh-editor-panel__section-title">2 &middot; Video</span>
+
+        <label className="mesh-editor-anim__field">
+          <input
+            type="file"
+            accept="video/mp4,video/quicktime,video/x-msvideo,video/x-matroska"
+            className="mesh-editor-panel__input"
+            onChange={e => m.onVideoChange?.(e.target.files?.[0] || null)}
+            disabled={busy}
+            aria-label="Video file"
+          />
+        </label>
+        {m.videoName && <span className="mesh-editor-panel__hint">{m.videoName}</span>}
+        <span className="mesh-editor-panel__hint">
+          One subject, whole body in frame, a single shot with a steady camera. A cut mid-clip
+          reads as the body teleporting.
+        </span>
+
+        <label className="mesh-editor-anim__field">
+          <span className="mesh-editor-panel__hint">Length to capture</span>
+          <select
+            className="mesh-editor-panel__input"
+            value={m.maxFrames ?? 301}
+            onChange={e => m.onMaxFramesChange?.(Number(e.target.value))}
+            disabled={busy}
+          >
+            {(m.framePresets || []).map(p => (
+              <option key={p.value} value={p.value}>{p.label}</option>
+            ))}
+          </select>
+        </label>
+        {/* The cap is the model's, and past it the video is silently truncated,
+            so say what will actually be captured rather than let it surprise. */}
+        <span className="mesh-editor-panel__hint">
+          Longer captures need more VRAM. Only the beginning of a longer video is used.
+        </span>
+
+        <button
+          type="button"
+          className="mesh-editor-btn mesh-editor-btn--primary"
+          onClick={m.onGenerate}
+          disabled={busy || !ready || !m.hasVideo}
+          title={ready ? 'Capture the motion in this video onto your rig' : 'Prepare the rig first'}
+        >
+          <span className="material-symbols-outlined">{m.running ? 'progress_activity' : 'videocam'}</span>
+          <span>{m.running ? 'Capturing…' : 'Capture motion'}</span>
+        </button>
+
+        {m.running && <MeshToolProgress progress={m.progress} />}
+
+        {m.error && (
+          <div className="mesh-editor-feedback mesh-editor-feedback--error mesh-editor-anim__error">
+            <span className="material-symbols-outlined">error</span>
+            <span>{m.error}</span>
+          </div>
+        )}
+      </div>
+
+      {/* Which chains the capture is allowed to drive.
+          The model regresses every joint at once and was trained on animal and
+          object motion, so it cannot hold a limb still on request: film only
+          your arms and the legs still drift, and body orientation lands on the
+          root, which swings the whole character to place a hand. Switching a
+          chain off here leaves it at its rest pose. Applies to captures already
+          taken — no need to shoot again. */}
+      {m.canFilter && (
+        <div className="mesh-editor-panel__section">
+          <span className="mesh-editor-panel__section-title">What the capture drives</span>
+          <span className="mesh-editor-panel__hint">
+            Switch off anything that should hold still. The model moves every joint it is
+            allowed to, even parts that never moved on camera.
+          </span>
+          {(m.boneGroups || []).map(g => (
+            <label key={g.id} className="mesh-editor-anim__field" style={{ flexDirection: 'row', alignItems: 'center', gap: '0.5em' }}>
+              <input
+                type="checkbox"
+                checked={!!m.drive?.has(g.id)}
+                onChange={() => m.onDriveToggle?.(g.id)}
+                disabled={busy}
+              />
+              <span>{g.label}</span>
+              {g.hint && <span className="mesh-editor-panel__hint" style={{ margin: 0 }}>— {g.hint}</span>}
+            </label>
+          ))}
+        </div>
+      )}
+
+      {/* MoCapAnything never animates fingers: which joints may move at all is
+          decided when the rig is prepared, and the hands are always among the
+          ones locked — the model has no view of them. Same fixed-pose control
+          as the Kimodo tab, and it works here even with "Fingers" switched off
+          above, because posing the fingers only needs the HAND to be driven. */}
+      <div className="mesh-editor-panel__section">
+        <span className="mesh-editor-panel__section-title">Hands</span>
+        {animation?.hasMapping ? (
+          <HandCurlControls
+            animation={animation}
+            hand={m}
+            note={'Captured motion never includes fingers, so this is a fixed pose held for the '
+              + 'whole clip. If the thumb folds the wrong way, change its axis above — which one '
+              + 'a rig uses is a convention, not something that can be read off the shape.'}
+          />
+        ) : (
+          <span className="mesh-editor-panel__hint">
+            Capture a motion first — the finger pose is applied to the clip on your rig.
+          </span>
+        )}
+      </div>
+
+      {/* Stated, not discovered. The model returns joint ROTATIONS only — the
+          root never translates — so a walk captured here runs on the spot. That
+          is usually what a game clip wants, but finding it out after saving a
+          version is not acceptable. */}
+      <div className="mesh-editor-panel__section">
+        <span className="mesh-editor-panel__section-title">What you get</span>
+        <span className="mesh-editor-panel__hint">
+          Motion is captured in place: the pose is followed, but the character does not travel
+          across the ground. Bones are driven directly, with no mapping step, because the capture
+          is made for this skeleton.
+        </span>
+        {m.lastStats && (
+          <div className="mesh-editor-texture-workflow-meta">
+            <span><strong>Frames:</strong> {m.lastStats.frames}</span>
+            <span><strong>Rate:</strong> {m.lastStats.fps} fps</span>
+            <span><strong>Bones driven:</strong> {m.lastStats.joints}</span>
+          </div>
+        )}
+      </div>
+
+      <ClipGallery animation={animation} emptyLabel="No captured motion yet." />
+    </div>
+  )
+}
+
+// The four Auto Rig tabs. A table rather than four hand-written buttons: the bar
+// is compact enough now that a fifth would fit, and the markup should not have
+// to be rewritten again to add one.
+const RIG_TABS = [
+  { id: 'skeleton', icon: 'accessibility_new', label: 'Skeleton',
+    title: 'Every bone in the rig — and where an Auto Rig mistake gets fixed' },
+  { id: 'animations', icon: 'animation', label: 'Animations',
+    title: 'Retarget a clip from the bundled reference library' },
+  { id: 'kimodo', icon: 'auto_awesome', label: 'Kimodo',
+    title: 'Generate an animation from a text prompt (NVIDIA Kimodo)' },
+  { id: 'mocap', icon: 'videocam', label: 'MoCap',
+    title: 'Capture motion from a video and drive this rig with it (MoCapAnything)' },
+]
+
+export default function SkeletonPanel({ skeleton, selectedBone, onSelectBone, animation, kimodo, mocap, edit }) {
   const [tab, setTab] = useState('skeleton')
   const [collapsed, setCollapsed] = useState(() => new Set())
   const rowRefs = useRef(new Map())
@@ -708,42 +945,38 @@ export default function SkeletonPanel({ skeleton, selectedBone, onSelectBone, an
     rowRefs.current.get(selectedBone)?.scrollIntoView({ block: 'nearest' })
   }, [selectedBone])
 
+  // Ask the MoCap service whether this exact mesh is already prepared, but only
+  // once the tab is actually opened: it costs a GLB export and an upload, which
+  // is not worth paying on every rig change for a tab most sessions never open.
+  const mocapOnOpen = mocap?.onOpen
+  useEffect(() => {
+    if (tab === 'mocap') mocapOnOpen?.()
+  }, [tab, mocapOnOpen])
+
   const boneCount = skeleton?.jointCount ?? names.length
 
   return (
     <aside className="mesh-editor-layers-panel mesh-editor-skeleton-panel">
+      {/* Four tabs no longer fit as labelled pills in this column, so they are
+          icon-over-label buttons — the same shape the Tools panel uses, which
+          keeps the two panels reading as one system. The labels stay (rather
+          than icon-only) because "Kimodo" and "MoCap" are not guessable from a
+          glyph. */}
       <div className="mesh-editor-skeleton-panel__tabs" role="tablist">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === 'skeleton'}
-          className={`mesh-editor-skeleton-panel__tab ${tab === 'skeleton' ? 'mesh-editor-skeleton-panel__tab--active' : ''}`}
-          onClick={() => setTab('skeleton')}
-        >
-          <span className="material-symbols-outlined">accessibility_new</span>
-          <span>Skeleton</span>
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === 'animations'}
-          className={`mesh-editor-skeleton-panel__tab ${tab === 'animations' ? 'mesh-editor-skeleton-panel__tab--active' : ''}`}
-          onClick={() => setTab('animations')}
-        >
-          <span className="material-symbols-outlined">animation</span>
-          <span>Animations</span>
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === 'kimodo'}
-          className={`mesh-editor-skeleton-panel__tab ${tab === 'kimodo' ? 'mesh-editor-skeleton-panel__tab--active' : ''}`}
-          onClick={() => setTab('kimodo')}
-          title="Generate an animation from a text prompt (NVIDIA Kimodo)"
-        >
-          <span className="material-symbols-outlined">auto_awesome</span>
-          <span>Kimodo</span>
-        </button>
+        {RIG_TABS.map(t => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={tab === t.id}
+            className={`mesh-editor-skeleton-panel__tab ${tab === t.id ? 'mesh-editor-skeleton-panel__tab--active' : ''}`}
+            onClick={() => setTab(t.id)}
+            title={t.title}
+          >
+            <span className="material-symbols-outlined">{t.icon}</span>
+            <span>{t.label}</span>
+          </button>
+        ))}
       </div>
 
       {tab === 'skeleton' ? (
@@ -1001,8 +1234,10 @@ export default function SkeletonPanel({ skeleton, selectedBone, onSelectBone, an
             </>
           )}
         </div>
-      ) : (
+      ) : tab === 'kimodo' ? (
         <KimodoTab animation={animation} kimodo={kimodo} />
+      ) : (
+        <MoCapTab animation={animation} mocap={mocap} />
       )}
     </aside>
   )

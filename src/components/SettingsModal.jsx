@@ -1382,6 +1382,112 @@ export default function SettingsModal({ onClose }) {
                   }))}
                 />
               </div>
+
+              <h3 className="settings-section-title font-label">Video to Motion (Python) Connection</h3>
+              <div className="settings-api-card">
+                <div className="settings-api-header">
+                  <div className="settings-api-icon">
+                    <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>videocam</span>
+                  </div>
+                  <span className="settings-api-name">MoCapAnything (video to motion)</span>
+                </div>
+
+                <div className="settings-grid settings-grid--triple">
+                  <div className="settings-input-group">
+                    <label className="settings-label">Url</label>
+                    <input
+                      className="settings-input"
+                      placeholder="http://127.0.0.1"
+                      value={localSettings?.apis?.mocaptools?.url || ''}
+                      onChange={e => setLocalSettings(prev => ({
+                        ...prev,
+                        apis: {
+                          ...prev?.apis,
+                          mocaptools: {
+                            ...prev?.apis?.mocaptools,
+                            url: e.target.value
+                          }
+                        }
+                      }))}
+                    />
+                  </div>
+
+                  <div className="settings-input-group">
+                    <label className="settings-label">Port</label>
+                    <input
+                      className="settings-input"
+                      placeholder="8401"
+                      value={localSettings?.apis?.mocaptools?.port || ''}
+                      onChange={e => setLocalSettings(prev => ({
+                        ...prev,
+                        apis: {
+                          ...prev?.apis,
+                          mocaptools: {
+                            ...prev?.apis?.mocaptools,
+                            port: e.target.value
+                          }
+                        }
+                      }))}
+                    />
+                  </div>
+                </div>
+
+                <div className="settings-input-group" style={{ marginTop: '10px' }}>
+                  <label className="settings-label">Model folder</label>
+                  <input
+                    className="settings-input"
+                    placeholder="Default: inside the service folder"
+                    value={localSettings?.apis?.mocaptools?.modelsPath || ''}
+                    onChange={e => setLocalSettings(prev => ({
+                      ...prev,
+                      apis: {
+                        ...prev?.apis,
+                        mocaptools: {
+                          ...prev?.apis?.mocaptools,
+                          modelsPath: e.target.value
+                        }
+                      }
+                    }))}
+                  />
+                </div>
+
+                <p className="settings-helper-text">
+                  Where the ~460 MB checkpoint is kept. Leave this empty to use the app data
+                  folder. Set it before installing — changing it later does not move what is
+                  already downloaded, and the checkpoint is only fetched into the new folder
+                  when the install runs again.
+                </p>
+
+                <p className="settings-helper-text">
+                  MoCapAnything V2, used by Mesh Editor &rarr; Auto Rig &rarr; MoCap to capture
+                  motion from a video onto your rig. Needs an NVIDIA GPU: a 20-second capture
+                  peaks around 10 GB of VRAM, and shorter captures need proportionally less.
+                  Preparing a rig also needs Blender, installed as a Python module (bpy) — there
+                  is no separate Blender install.
+                  Outside the desktop app, start it from thirdparty/mocapanything/run_server.
+                </p>
+
+                <p className="settings-helper-text">
+                  Captured motion is <b>in place</b>: the pose is followed, but the character does
+                  not travel across the ground. Each rig is prepared once (a few minutes, cached)
+                  before video can drive it.
+                </p>
+
+                <ServiceInstaller
+                  service="mocap"
+                  buttonLabel="Install video-to-motion service"
+                  readyText="Video-to-motion service is installed and ready."
+                  note="One-time install; downloads roughly 3 GB (PyTorch, Blender-as-a-module and the checkpoint) and needs an NVIDIA GPU."
+                />
+                <ServiceControl name="mocap" />
+                <AutoStartToggle
+                  checked={localSettings?.apis?.mocaptools?.autoStart}
+                  onChange={v => setLocalSettings(prev => ({
+                    ...prev,
+                    apis: { ...prev?.apis, mocaptools: { ...prev?.apis?.mocaptools, autoStart: v } }
+                  }))}
+                />
+              </div>
             </section>
           )}
         </div>

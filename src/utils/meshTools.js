@@ -14,6 +14,7 @@ const SERVICE_LABELS = {
   meshtools: 'Mesh Tools',
   rigging: 'Rigging',
   motion: 'Motion Generation',
+  mocap: 'Video to Motion',
   comfyui: 'ComfyUI',
 }
 

@@ -24,10 +24,12 @@ const {
   ensureUv,
   setupPythonServer,
   setupSkintokens,
+  setupMocap,
   setupKimodo,
   startPythonServer,
   startSkintokens,
   startKimodo,
+  startMocap,
 } = require('./pysetup.cjs');
 const {
   COMFY_SETUP_TAG,
@@ -47,6 +49,7 @@ const BACKEND_ORIGIN = `http://localhost:${BACKEND_PORT}`;
 const PYTHON_PORT = Number(process.env.MESHTOOLS_PORT) || 8200;
 const RIG_PORT = Number(process.env.RIGTOOLS_PORT) || 8300;
 const MOTION_PORT = Number(process.env.KIMODO_PORT) || 8400;
+const MOCAP_PORT = Number(process.env.MOCAP_PORT) || 8401;
 // Which repo the motion service's 16 GB text-encoder base comes from. The
 // official meta-llama repo is GATED — it 403s until the user requests access and
 // runs `hf auth login` — so the default is the ungated mirror of the same
@@ -63,6 +66,7 @@ const SERVER_JS = path.join(APP_ROOT, 'server.js');
 const PYTHON_DIR = path.join(APP_ROOT, 'python-server');
 const SKINTOKENS_DIR = path.join(APP_ROOT, 'thirdparty', 'skintokens');
 const KIMODO_DIR = path.join(APP_ROOT, 'thirdparty', 'kimodo');
+const MOCAP_DIR = path.join(APP_ROOT, 'thirdparty', 'mocapanything');
 
 // Backend keys data/ off process.cwd() (storage.js); point it at a per-user
 // writable dir. The venvs also live here — the installed app dir is read-only.
@@ -78,6 +82,12 @@ const MOTION_VENV = path.join(DATA_ROOT, 'motion-venv');
 // adapter, and — unless Settings points the model folder elsewhere — the Kimodo
 // checkpoint and the 16 GB Llama-3 base beneath checkpoints/.
 const MOTION_DATA = path.join(DATA_ROOT, 'motion-data');
+const MOCAP_VENV = path.join(DATA_ROOT, 'mocap-venv');
+// Everything the video-to-motion service writes: the per-rig bakes (a few
+// hundred MB each) and — unless Settings points the model folder elsewhere —
+// the 460 MB checkpoint beneath checkpoints/. The installed app dir is
+// read-only, so this must not live beside the vendored model tree.
+const MOCAP_DATA = path.join(DATA_ROOT, 'mocap-data');
 // Kimodo's text encoder is LLM2Vec over Meta Llama 3, so installing it downloads
 // Llama-3-8B-Instruct weights — which are licensed, not merely open. The Meta Llama 3
 // Community License requires the user to accept it ("By clicking 'I Accept' below or
@@ -107,8 +117,8 @@ let shuttingDown = false;
 // memory (the CUDA context an in-process unload can't free). `handles[name]`
 // holds a running service's { stop() }; `starting[name]` dedupes concurrent
 // ensure() calls. The registry is populated after the launchers are defined.
-const handles = { meshtools: null, rigging: null, motion: null, comfyui: null };
-const starting = { meshtools: null, rigging: null, motion: null, comfyui: null };
+const handles = { meshtools: null, rigging: null, motion: null, mocap: null, comfyui: null };
+const starting = { meshtools: null, rigging: null, motion: null, mocap: null, comfyui: null };
 let SERVICES = null;
 // Set while a managed-ComfyUI update or reinstall is rewriting the install tree.
 // Both jobs delete files a running ComfyUI would have open, so starting the
@@ -345,6 +355,7 @@ async function autoStartServices() {
     apis.meshtools?.autoStart ? 'meshtools' : null,
     apis.rigtools?.autoStart ? 'rigging' : null,
     apis.motiontools?.autoStart ? 'motion' : null,
+    apis.mocaptools?.autoStart ? 'mocap' : null,
     apis.comfyui?.managed && apis.comfyui?.autoStart ? 'comfyui' : null,
   ].filter(Boolean);
   for (const name of wanted) {
@@ -389,6 +400,26 @@ function serviceRegistry() {
           serviceDir: KIMODO_DIR, venvDir: MOTION_VENV, dataDir: MOTION_DATA,
           modelsDir: this.modelsDir, llamaBase: LLAMA_BASE, port,
           logStream: openLogStream('kimodo.log'), log,
+        });
+      },
+    },
+    mocap: {
+      label: 'Video to Motion', venv: MOCAP_VENV, port: MOCAP_PORT, logFile: 'mocap.log',
+      // Same as motion: port and model folder are read at start time, so a
+      // change in Settings takes effect on the next start rather than the next
+      // app launch.
+      resolveLaunch: async (svc) => {
+        const settings = await fetchSettings();
+        const api = settings?.apis?.mocaptools || {};
+        const p = Number(api.port);
+        svc.port = Number.isFinite(p) && p > 0 ? p : MOCAP_PORT;
+        svc.modelsDir = String(api.modelsPath || '').trim() || null;
+      },
+      start(port) {
+        return startMocap({
+          serviceDir: MOCAP_DIR, venvDir: MOCAP_VENV, dataDir: MOCAP_DATA,
+          modelsDir: this.modelsDir, port,
+          logStream: openLogStream('mocap.log'), log,
         });
       },
     },
@@ -699,7 +730,7 @@ function comfyAvailable() {
 // service that is already set up (so the in-app "install rigging" path doesn't
 // needlessly reinstall Mesh Tools).
 async function doSetup(opts, send) {
-  const { rigging = false, motion = false, comfyui = false } = opts || {};
+  const { rigging = false, motion = false, mocap = false, comfyui = false } = opts || {};
   const uv = await ensureUv({ appRoot: APP_ROOT, onLine: (t) => send({ service: 'meshtools', kind: 'log', text: t }) });
   if (!uv) throw new Error('Could not find or install uv (the Python toolchain manager).');
 
@@ -740,6 +771,23 @@ async function doSetup(opts, send) {
       uv, appRoot: APP_ROOT, serviceDir: KIMODO_DIR, venvDir: MOTION_VENV, dataDir: MOTION_DATA,
       modelsDir, llamaBase: LLAMA_BASE,
       onProgress: (e) => send({ service: 'motion', ...e }),
+    });
+  }
+
+  if (mocap && !isReady(MOCAP_VENV)) {
+    // Same as motion: the model folder is a setting, so an install started from
+    // Settings has to honour it or the checkpoint lands somewhere the service
+    // will not look. No licence gate here — MoCapAnything and its weights are
+    // MIT, and Blender arrives as a pip wheel.
+    let modelsDir = null;
+    try {
+      const settings = await fetchSettings();
+      modelsDir = String(settings?.apis?.mocaptools?.modelsPath || '').trim() || null;
+    } catch { /* fall back to the default folder under MOCAP_DATA */ }
+    await setupMocap({
+      uv, serviceDir: MOCAP_DIR, venvDir: MOCAP_VENV, dataDir: MOCAP_DATA,
+      modelsDir,
+      onProgress: (e) => send({ service: 'mocap', ...e }),
     });
   }
 
@@ -800,6 +848,7 @@ function registerSetupIpc() {
     meshtools: isReady(PY_VENV, MESHTOOLS_REQS_TAG),
     rigging: isReady(RIG_VENV),
     motion: isReady(MOTION_VENV),
+    mocap: isReady(MOCAP_VENV),
     comfyui: comfyReady(),
     comfyuiAvailable: comfyAvailable(),
     // Whether the motion service may be installed at all (see LLAMA_ACCEPT_FILE).
@@ -822,7 +871,7 @@ function registerSetupIpc() {
   ipcMain.handle('setup:run', async (event, opts = {}) => {
     const send = (evt) => { try { event.sender.send('setup:progress', evt); } catch { /* window gone */ } };
     try {
-      await doSetup({ rigging: !!opts.rigging, motion: !!opts.motion, comfyui: !!opts.comfyui }, send);
+      await doSetup({ rigging: !!opts.rigging, motion: !!opts.motion, mocap: !!opts.mocap, comfyui: !!opts.comfyui }, send);
       // Provisioned only — services are started on demand (or from Settings),
       // not here, so installing doesn't spin up a process the user isn't using.
       log('Setup run complete.');
@@ -832,6 +881,7 @@ function registerSetupIpc() {
           meshtools: isReady(PY_VENV, MESHTOOLS_REQS_TAG),
           rigging: isReady(RIG_VENV),
           motion: isReady(MOTION_VENV),
+          mocap: isReady(MOCAP_VENV),
           comfyui: comfyReady(),
         },
       };

@@ -466,6 +466,101 @@ async function setupKimodo({ uv, appRoot, serviceDir, venvDir, dataDir, modelsDi
 // worse than falling back to a source build.
 //
 // Returns true only when the module actually imports.
+// Provision the video-to-motion service (MoCapAnything V2).
+//
+// Simpler than setupKimodo in one way and fussier in two:
+//   - no text encoder, so no gated weights and no separate process;
+//   - torch AND torchvision, because the per-rig bake reaches
+//     torchvision.transforms through utils.common. A torch-only install fails
+//     several stages into the first bake rather than here;
+//   - Blender arrives as the `bpy` WHEEL from requirements.txt (~323 MB), so
+//     there is no Blender to install separately. That is also why this pins
+//     PYVER: bpy publishes wheels for CPython 3.11 and 3.13 only.
+async function setupMocap({ uv, serviceDir, venvDir, dataDir, modelsDir, onProgress }) {
+  // Needs an NVIDIA GPU. Say so before, not several GB into, a torch install
+  // that has no macOS CUDA build to find.
+  if (IS_MAC) {
+    throw new Error('Video to motion (MoCapAnything) needs an NVIDIA GPU (CUDA), which macOS does not provide. The rest of the app works normally.');
+  }
+  const vp = venvPython(venvDir);
+  const dataRoot = dataDir || serviceDir;
+  try { fs.mkdirSync(dataRoot, { recursive: true }); } catch { /* ignore */ }
+
+  // The same view of where things live as the running service will have (see
+  // startMocap) — download.py below writes into exactly the folder it reads.
+  const env = { ...process.env, MOCAP_DATA_DIR: dataRoot };
+  if (modelsDir) env.MOCAP_CKPT_DIR = modelsDir;
+
+  await runSteps([
+    {
+      label: 'Provisioning Python', weight: 2,
+      run: (log) => runStream(uv, ['python', 'install', PYVER], { cwd: serviceDir, env, onLine: log }).then((r) => r.code),
+    },
+    {
+      label: 'Creating virtual environment', weight: 1,
+      run: (log) => ensureVenv({ uv, serviceDir, venvDir, onLine: log }),
+    },
+    {
+      // Includes bpy — the single biggest item here after torch.
+      label: 'Installing video-to-motion dependencies (includes Blender)', weight: 5,
+      run: (log) => runStream(uv, ['pip', 'install', '--python', vp, '-r', 'requirements.txt'], { cwd: serviceDir, env, onLine: log }).then((r) => r.code),
+    },
+  ], (e) => onProgress(scaled(e, 0, 0.3)));
+
+  // torch, CUDA-matched by the service's own selector (the same table the CLI
+  // uses). It emits "torch torchvision --index-url ..." so both come from one
+  // index and their CUDA builds cannot drift apart.
+  onProgress({ kind: 'phase', phase: 'Selecting CUDA build', pct: 0.3 });
+  const sel = await runStream(vp, ['select_torch.py'], { cwd: serviceDir, env, onLine: (t) => onProgress({ kind: 'log', text: t }) });
+  const torchArgs = sel.stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean).pop() || '';
+
+  onProgress({ kind: 'phase', phase: 'Installing PyTorch', pct: 0.35 });
+  {
+    // No GPU detected -> a CPU torch still installs, and the probe below turns
+    // that into a warning rather than a failure.
+    const args = torchArgs ? torchArgs.split(/\s+/) : ['torch', 'torchvision'];
+    // --reinstall-package for BOTH: requirements can leave a CPU build already
+    // satisfying the version (local +cuXXX tag and all), which uv would then
+    // "audit" and skip, silently leaving the service on the CPU.
+    const r = await runStream(uv, ['pip', 'install', '--python', vp, '--reinstall-package', 'torch', '--reinstall-package', 'torchvision', ...args], { cwd: serviceDir, env, onLine: (t) => onProgress({ kind: 'log', text: t }) });
+    if (r.code !== 0) throw new Error(`PyTorch install failed (exit ${r.code}).`);
+  }
+  {
+    const probe = 'import torch,torchvision,sys; print("torch", torch.__version__, "torchvision", torchvision.__version__, "cuda", torch.cuda.is_available()); sys.exit(0 if torch.cuda.is_available() else 1)';
+    const r = await runStream(vp, ['-c', probe], { cwd: serviceDir, env, onLine: (t) => onProgress({ kind: 'log', text: t }) });
+    if (r.code !== 0) {
+      onProgress({ kind: 'log', text: '\nWARNING: torch cannot see a CUDA GPU. Capturing motion will run on the CPU and be very slow.\n' });
+    }
+  }
+
+  // Which Blender the bake will use. Not fatal — capturing motion works without
+  // one; only PREPARING a rig needs it — so this reports rather than throws.
+  onProgress({ kind: 'phase', phase: 'Checking Blender', pct: 0.55 });
+  {
+    const probe = 'import sys; sys.path.insert(0, "."); import pipeline; m, w = pipeline.blender_runner(); print("Blender:", "bpy module" if m == "bpy" else "application", w)';
+    const r = await runStream(vp, ['-c', probe], { cwd: serviceDir, env, onLine: (t) => onProgress({ kind: 'log', text: t }) });
+    if (r.code !== 0) {
+      onProgress({ kind: 'log', text: '\nWARNING: no bpy module and no Blender executable. Preparing a rig will fail; set BLENDER to a Blender 3.6+ binary.\n' });
+    }
+  }
+
+  // The checkpoint (~460 MB). Downloaded with the same env the service runs
+  // with, so it lands where mocap_paths.checkpoint_dir() will look for it.
+  onProgress({ kind: 'phase', phase: 'Downloading the motion checkpoint', pct: 0.6 });
+  {
+    const r = await runStream(vp, ['download.py'], { cwd: serviceDir, env, onLine: (t) => onProgress({ kind: 'log', text: t }) });
+    if (r.code !== 0) {
+      // Recoverable: the service starts and reports checkpoint_present=false,
+      // and the download can be retried. Better than failing a 3 GB install on
+      // its last step.
+      onProgress({ kind: 'log', text: '\nWARNING: the checkpoint download failed. The service will start but cannot capture motion until it succeeds.\n' });
+    }
+  }
+
+  onProgress({ kind: 'phase', phase: 'Ready', pct: 1 });
+  onProgress({ kind: 'done' });
+}
+
 async function installPrebuiltWheel({ uv, vp, appRoot, package: pkg, env, onLine }) {
   const dir = appRoot ? path.join(appRoot, 'resources', 'wheels', pkg) : null;
   const emit = (s) => { if (onLine) try { onLine(s); } catch { /* ignore */ } };
@@ -567,6 +662,16 @@ function startKimodo({ serviceDir, venvDir, dataDir, modelsDir, llamaBase, port,
   return startService({ name: 'motion', serviceDir, venvDir, script: 'motion_server.py', logStream, log, env });
 }
 
+function startMocap({ serviceDir, venvDir, dataDir, modelsDir, port, logStream, log }) {
+  const env = { MOCAP_HOST: '127.0.0.1', MOCAP_PORT: String(port) };
+  // Without MOCAP_DATA_DIR the service would cache per-rig bakes under
+  // %LOCALAPPDATA%; pointing it at the app's data root keeps everything the
+  // desktop app writes in one place the uninstaller can offer by name.
+  if (dataDir) env.MOCAP_DATA_DIR = dataDir;
+  if (modelsDir) env.MOCAP_CKPT_DIR = modelsDir;
+  return startService({ name: 'mocap', serviceDir, venvDir, script: 'mocap_server.py', logStream, log, env });
+}
+
 function startService({ name, serviceDir, venvDir, script, env, logStream, log }) {
   const write = (s) => { try { logStream && logStream.write(s); } catch { /* ignore */ } };
   const vp = venvPython(venvDir);
@@ -628,10 +733,12 @@ module.exports = {
   installPrebuiltWheel,
   setupPythonServer,
   setupSkintokens,
+  setupMocap,
   setupKimodo,
   startPythonServer,
   startSkintokens,
   startKimodo,
+  startMocap,
   killTree,
   // Shared with comfysetup.cjs, which provisions a third service the same way.
   runStream,

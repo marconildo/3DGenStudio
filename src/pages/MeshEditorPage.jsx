@@ -171,6 +171,9 @@ import { describeClip, applyFrameEdit, applyFrameOperation, applyFrameRotation, 
   copyFramePose, pasteFramePose, ensurePositionTrack, clearFrameValue, smoothLoopSeam,
   restoreTrackValues, frameTime,
   DEFAULT_EDIT_SCOPE, DEFAULT_EDIT_SPAN } from '../utils/animationEdit'
+import { MOCAP_SOURCE_ID, MOCAP_MAX_FRAMES, MOCAP_FRAME_PRESETS, inspectMocapRig,
+  prepareMocapRig, generateMocapClip, mocapIdentityMapping, mocapRigKey,
+  forgetMocapRig, MOCAP_BONE_GROUPS } from '../utils/mocapGen'
 import { KIMODO_SOURCE_ID, countPromptSegments, generateMotionClip, loadKimodoSkeletonSource,
   listSavedMotions, saveMotion, deleteSavedMotion, loadSavedMotionClip } from '../utils/motionGen'
 import OptimizeToolsPanel from '../components/meshEditor/OptimizeToolsPanel'
@@ -5022,7 +5025,14 @@ export default function MeshEditorPage() {
   // land. Both invalidate every cached bake, so their toggles clear the cache.
   const getRetargetedClip = useCallback(async (
     clipName, matchRestPose = animMatchRestPose, inPlace = animInPlace,
+    mappingOverride = null,
   ) => {
+    // `mappingOverride` is here for the same reason matchRestPose and inPlace
+    // are parameters: a toggle that changes the MAPPING (the MoCap "what the
+    // capture drives" chains) must rebake with its new value, and setState has
+    // not landed yet when it calls. Reading animMapping from the closure would
+    // rebake with the previous set — visibly one toggle behind.
+    const activeMapping = mappingOverride || animMapping
     // A hand-edited clip is authoritative and is never rebaked behind the user's
     // back: it lives outside the bake cache, so it survives every clear a bake
     // toggle triggers. Only Revert (or a rig/mapping change) gives it back.
@@ -5032,7 +5042,7 @@ export default function MeshEditorPage() {
     if (cached) return cached
     const source = animSourceRef.current
     const target = animTargetRef.current
-    if (!source || !target || !animMapping) return null
+    if (!source || !target || !activeMapping) return null
     const clip = source.clips.find(c => c.name === clipName)
     if (!clip) return null
     // Let the spinner paint before the (synchronous) frame-by-frame bake.
@@ -5049,7 +5059,7 @@ export default function MeshEditorPage() {
       sourceScene: source.scene,
       sourceSkinnedMesh: source.skinnedMesh,
       clip: sourceClip,
-      mapping: animMapping,
+      mapping: activeMapping,
       matchRestPose,
     })
     // Hold the fingers in a fixed pose. Only useful for Kimodo, whose clips carry
@@ -5058,7 +5068,7 @@ export default function MeshEditorPage() {
     const posed = withHandPose(retargeted, {
       targetScene: target.scene,
       targetSkinnedMesh: target.skinnedMesh,
-      mapping: animMapping,
+      mapping: activeMapping,
       curl: {
         left: handCurl.left / 100,
         right: handCurl.right / 100,
@@ -5074,13 +5084,13 @@ export default function MeshEditorPage() {
 
   // Bake a clip and put it on screen. Shared by clicking a clip and by the
   // rest-pose / in-place toggles, which have to rebuild whatever is already playing.
-  const showRetargetedClip = useCallback(async (clipName, matchRestPose, inPlace) => {
+  const showRetargetedClip = useCallback(async (clipName, matchRestPose, inPlace, mappingOverride = null) => {
     const target = animTargetRef.current
-    if (!animSourceRef.current || !target || !animMapping) return
+    if (!animSourceRef.current || !target || !(mappingOverride || animMapping)) return
     setAnimRetargeting(clipName)
     setAnimError(null)
     try {
-      const retargeted = await getRetargetedClip(clipName, matchRestPose, inPlace)
+      const retargeted = await getRetargetedClip(clipName, matchRestPose, inPlace, mappingOverride)
       if (!retargeted) throw new Error('Animation clip not found.')
       setAnimPreview({
         scene: target.scene,
@@ -5796,6 +5806,186 @@ export default function MeshEditorPage() {
   }, [motionLibBusy])
 
   // Bundle for the SkeletonPanel Kimodo tab.
+  // --- Auto Rig → MoCap (video-to-motion) -----------------------------------
+  // Like Kimodo, this shares the Animations pipeline rather than duplicating it:
+  // the captured clip lands in the same gallery, is previewed by the same code
+  // and saved by the same button.
+  //
+  // Unlike Kimodo, there is no bone-mapping step for the user. MoCapAnything is
+  // conditioned on the target rig, so the BVH comes back on THIS mesh's bone
+  // names — the mapping is the identity, computed rather than authored. What
+  // replaces it is a per-rig PREPARE step: the rig has to be baked (skeleton,
+  // joint-name embeddings, a reference pose, a rendered view) before any video
+  // can drive it. That is minutes of Blender, cached by mesh content hash.
+  const [mocapRigId, setMocapRigId] = useState(null)
+  const [mocapPrepared, setMocapPrepared] = useState(false)
+  const [mocapPreparedJoints, setMocapPreparedJoints] = useState(0)
+  const [mocapPreparing, setMocapPreparing] = useState(false)
+  const [mocapPrepareProgress, setMocapPrepareProgress] = useState(null)
+  const [mocapRunning, setMocapRunning] = useState(false)
+  const [mocapProgress, setMocapProgress] = useState(null)
+  const [mocapError, setMocapError] = useState(null)
+  const [mocapServiceError, setMocapServiceError] = useState(null)
+  const [mocapVideo, setMocapVideo] = useState(null)
+  const [mocapMaxFrames, setMocapMaxFrames] = useState(MOCAP_MAX_FRAMES)
+  const [mocapLastStats, setMocapLastStats] = useState(null)
+  // The bake is keyed by the SKELETON. Editing bones after preparing changes that
+  // key, so the bake on disk no longer describes this rig — compared on every
+  // render rather than tracked, so it cannot drift out of sync with the mesh.
+  const [mocapPreparedKey, setMocapPreparedKey] = useState('')
+  // Every chain is driven by default; the user switches off what should hold
+  // still. See MOCAP_BONE_GROUPS for why this is a mapping filter and not a
+  // capture setting.
+  const [mocapDrive, setMocapDrive] = useState(() => new Set(MOCAP_BONE_GROUPS.map(g => g.id)))
+  const mocapCounterRef = useRef(0)
+  const mocapCurrentKey = useMemo(() => mocapRigKey(skeleton), [skeleton])
+  const mocapStale = !!mocapPreparedKey && !!mocapCurrentKey && mocapCurrentKey !== mocapPreparedKey
+
+  // Ask the service whether THIS exact mesh is already baked. Cheap (a hash, no
+  // GPU), so the tab can open in the right state instead of making the user
+  // press Prepare to find out.
+  const refreshMocapRigState = useCallback(async () => {
+    if (!skeleton) return
+    try {
+      const blob = await buildRiggedResultBlobRef.current?.()
+      if (!blob) return
+      const info = await inspectMocapRig(blob, mocapCurrentKey)
+      setMocapRigId(info.rig_id || null)
+      setMocapPrepared(!!info.prepared)
+      setMocapPreparedJoints(info.info?.joints || 0)
+      setMocapPreparedKey(info.prepared ? mocapCurrentKey : '')
+      setMocapServiceError(null)
+    } catch (err) {
+      console.error('Could not check the MoCap rig state:', err)
+      setMocapServiceError(err?.message || 'Could not reach the video-to-motion service.')
+    }
+  }, [skeleton, mocapCurrentKey])
+
+  const handleMocapPrepare = useCallback(async () => {
+    if (mocapPreparing || mocapRunning) return
+    setMocapPreparing(true)
+    setMocapError(null)
+    setMocapServiceError(null)
+    setMocapPrepareProgress(null)
+    try {
+      const blob = await buildRiggedResultBlobRef.current?.()
+      if (!blob) throw new Error('There is no rigged mesh to prepare.')
+      const info = await prepareMocapRig({
+        meshBlob: blob,
+        rigName: (meshName || 'rig').trim() || 'rig',
+        rigKey: mocapCurrentKey,
+        onProgress: setMocapPrepareProgress,
+      })
+      // A re-prepare after a skeleton edit produces a NEW rig id, leaving the
+      // previous bake (a few hundred MB) orphaned on disk with nothing able to
+      // reach it again. Drop it rather than accumulate one per edit. Failure is
+      // ignored: a leftover cache directory must not fail the prepare.
+      const supersededId = mocapRigId
+      setMocapRigId(info.rig_id)
+      setMocapPrepared(true)
+      setMocapPreparedJoints(info.joints || 0)
+      setMocapPreparedKey(mocapCurrentKey)
+      if (supersededId && supersededId !== info.rig_id) {
+        forgetMocapRig(supersededId).catch(err =>
+          console.warn('Could not remove the superseded MoCap bake:', err))
+      }
+    } catch (err) {
+      console.error('Preparing the rig for MoCap failed:', err)
+      setMocapError(err?.message || 'Preparing the rig failed.')
+    } finally {
+      setMocapPreparing(false)
+      setMocapPrepareProgress(null)
+    }
+  }, [mocapPreparing, mocapRunning, meshName, mocapCurrentKey, mocapRigId])
+
+  // Put the captured BVH's skeleton in the source-rig slot. Unlike Kimodo's
+  // (a fixed SOMA rest pose fetched up front) this skeleton IS the result, so it
+  // can only be installed once a capture exists.
+  const installMocapSource = useCallback(source => {
+    setAnimMapping(null)
+    setBoneMapSkeletons(null)
+    setAnimClips([])
+    setSelectedAnimation(null)
+    setAnimPreview(null)
+    setCheckedAnimations(new Set())
+    retargetedClipsRef.current.clear()
+    resetAnimEdits()
+    // Rest-pose matching OFF for captures. It exists to stop a reference rig's
+    // stance leaking into the mesh, but here the source IS this mesh's skeleton,
+    // so there is no stance to reconcile — and the source rest pose comes from
+    // the bake, which yawed the rig to face +Z. Matching against it imposes the
+    // bake's stance on the mesh and then makes retargetAnimationClip recompute
+    // floorOffset from that posed bounding box, which lifts the character off
+    // the ground. The toggle is still there if a rig ever needs it.
+    setAnimMatchRestPose(false)
+    animSourceRef.current = source
+    setAnimReferenceId(MOCAP_SOURCE_ID)
+    return source
+  }, [resetAnimEdits])
+
+  const handleMocapGenerate = useCallback(async () => {
+    if (mocapRunning || !mocapVideo || !mocapRigId) return
+    setMocapRunning(true)
+    setMocapError(null)
+    setMocapProgress(null)
+    try {
+      const target = await ensureAnimTargetScene()
+
+      mocapCounterRef.current += 1
+      const label = (mocapVideo.name || 'capture').replace(/\.[^.]+$/, '').slice(0, 40)
+      const name = `${mocapCounterRef.current}. ${label}`
+
+      const { clip, source, bvh, stats } = await generateMocapClip({
+        videoFile: mocapVideo,
+        rigId: mocapRigId,
+        maxFrames: mocapMaxFrames,
+        name,
+        onProgress: setMocapProgress,
+      })
+      setMocapLastStats(stats)
+
+      // The capture is minutes of GPU time and the BVH is the mesh-independent
+      // artifact worth keeping, so persist before anything else can fail. A save
+      // failure must not fail the capture: the clip is already in hand.
+      saveMotion({ name, prompt: `Video: ${mocapVideo.name || 'clip'}`, bvh })
+        .then(saved => setMotionLibrary(prev => [saved, ...prev]))
+        .catch(err => {
+          console.error('Could not save the captured motion:', err)
+          setMotionLibError(err?.message || 'The motion was captured but could not be saved.')
+        })
+
+      installMocapSource(source)
+
+      // Identity mapping: the service returned OUR bone names. Bones the target
+      // does not have are dropped rather than guessed.
+      const mapping = mocapIdentityMapping(source.boneNames, target.boneNames, mocapDrive)
+      if (!Object.keys(mapping).length) {
+        throw new Error(Object.keys(mocapIdentityMapping(source.boneNames, target.boneNames)).length
+          ? 'Every bone chain is switched off — turn at least one back on.'
+          : 'The captured skeleton does not match this mesh. Prepare the rig again.')
+      }
+      setAnimMapping(mapping)
+      setAnimArmTargets(findUpperArmTargets(mapping))
+
+      source.clips = [...(source.clips || []), clip]
+      setAnimClips(source.clips.map(c => ({ name: c.name })))
+      setSelectedAnimation(name)
+      // Deliberately NOT auto-played. showRetargetedClip reads animMapping
+      // through its own closure, and the mapping was created a moment ago in
+      // this same call — so the bake would silently no-op. The clip is in the
+      // gallery and plays on click, which is what the Kimodo tab does for the
+      // identical reason on its first generation.
+    } catch (err) {
+      console.error('Video to motion failed:', err)
+      setMocapError(err?.message || 'Capturing the motion failed.')
+    } finally {
+      setMocapRunning(false)
+      setMocapProgress(null)
+    }
+  }, [mocapRunning, mocapVideo, mocapRigId, mocapMaxFrames, mocapDrive,
+    ensureAnimTargetScene, installMocapSource])
+
+
   const kimodoPanelProps = useMemo(() => ({
     prompt: kimodoPrompt,
     onPromptChange: setKimodoPrompt,
@@ -5831,6 +6021,75 @@ export default function MeshEditorPage() {
     animLoading, handleKimodoGenerate, handleKimodoOpenMapping, animReferenceId, kimodoAutoMapped,
     handCurl, handleHandCurlChange, handleHandCurlCommit,
     motionLibrary, motionLibLoading, motionLibError, refreshMotionLibrary])
+
+  // Re-map an existing capture rather than making the user re-shoot.
+  //
+  // The new set is computed OUTSIDE setMocapDrive: a state updater has to be
+  // pure, and the retarget below is very much a side effect. It is also handed
+  // to showRetargetedClip explicitly — setAnimMapping has not landed yet, and
+  // the bake reads the mapping from its own closure, so without that the clip
+  // rebakes with the PREVIOUS set and every toggle appears one step behind.
+  const handleMocapDriveToggle = useCallback(groupId => {
+    const next = new Set(mocapDrive)
+    if (next.has(groupId)) next.delete(groupId)
+    else next.add(groupId)
+    setMocapDrive(next)
+
+    const source = animSourceRef.current
+    const target = animTargetRef.current
+    if (animReferenceId !== MOCAP_SOURCE_ID || !source || !target) return
+
+    const mapping = mocapIdentityMapping(source.boneNames, target.boneNames, next)
+    if (!Object.keys(mapping).length) return   // everything off: keep the last good bake
+    setAnimMapping(mapping)
+    setAnimArmTargets(findUpperArmTargets(mapping))
+    // Cached bakes were made against the old mapping.
+    retargetedClipsRef.current.clear()
+    if (selectedAnimation) {
+      void showRetargetedClip(selectedAnimation, false, undefined, mapping)
+    }
+  }, [mocapDrive, animReferenceId, selectedAnimation, showRetargetedClip])
+
+  const mocapPanelProps = useMemo(() => ({
+    onOpen: refreshMocapRigState,
+    rigId: mocapRigId,
+    prepared: mocapPrepared,
+    preparedJoints: mocapPreparedJoints,
+    canPrepare: !!skeleton,
+    staleRig: mocapStale,
+    preparing: mocapPreparing,
+    prepareProgress: mocapPrepareProgress,
+    onPrepare: handleMocapPrepare,
+    hasVideo: !!mocapVideo,
+    videoName: mocapVideo?.name || '',
+    onVideoChange: setMocapVideo,
+    maxFrames: mocapMaxFrames,
+    onMaxFramesChange: setMocapMaxFrames,
+    framePresets: MOCAP_FRAME_PRESETS,
+    boneGroups: MOCAP_BONE_GROUPS,
+    drive: mocapDrive,
+    onDriveToggle: handleMocapDriveToggle,
+    canFilter: animReferenceId === MOCAP_SOURCE_ID,
+    // Same shared state as the Kimodo tab: withHandPose is applied downstream in
+    // getRetargetedClip for every source, so both tabs drive one finger pose.
+    handCurl,
+    onHandCurlChange: handleHandCurlChange,
+    onHandCurlCommit: handleHandCurlCommit,
+    onHandCurlReset: () => {
+      setHandCurl(prev => ({ ...prev, left: 0, right: 0, leftThumb: 0, rightThumb: 0 }))
+      retargetedClipsRef.current.clear()
+    },
+    running: mocapRunning,
+    progress: mocapProgress,
+    error: mocapError,
+    serviceError: mocapServiceError,
+    lastStats: mocapLastStats,
+    onGenerate: handleMocapGenerate,
+  }), [refreshMocapRigState, mocapRigId, mocapPrepared, mocapPreparedJoints, skeleton, mocapStale,
+    mocapPreparing, mocapPrepareProgress, handleMocapPrepare, mocapVideo,
+    mocapMaxFrames, mocapRunning, mocapProgress, mocapError, mocapServiceError,
+    mocapLastStats, handleMocapGenerate, mocapDrive, handleMocapDriveToggle,
+    animReferenceId, handCurl, handleHandCurlChange, handleHandCurlCommit])
 
   // Bundle for the SkeletonPanel Animations tab.
   const animationPanelProps = useMemo(() => ({
@@ -9160,6 +9419,7 @@ export default function MeshEditorPage() {
                 onSelectBone={setSelectedBone}
                 animation={animationPanelProps}
                 kimodo={kimodoPanelProps}
+                mocap={mocapPanelProps}
                 edit={{
                   available: rigEditable,
                   active: rigEditing && rigEditable,

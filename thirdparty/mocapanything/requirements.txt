@@ -1,0 +1,42 @@
+# Video-to-motion service (MoCapAnything V2). torch is NOT listed here: it is
+# installed afterwards by run_server, against the CUDA build select_torch.py
+# picks for the machine. Anything that pulls torch in from PyPI would drag a CPU
+# build in first and win.
+#
+# Versions are deliberately loose. The upstream repo pins transformers==4.57.1
+# and numpy<2, but the only transformers symbols this code touches are
+# AutoImageProcessor, Dinov2Model, T5EncoderModel and T5Tokenizer — all present
+# in 5.x — and there are no numpy-2-removed aliases anywhere in the tree. Keeping
+# the range open is what allows this service to share an environment with the
+# rigging service (see README.md, "Sharing an environment").
+
+# --- inference ---------------------------------------------------------------
+transformers>=4.57
+numpy>=1.26
+opencv-python
+pillow
+scipy
+scikit-image
+matplotlib
+trimesh
+roma
+einops
+sentencepiece          # T5Tokenizer is the sentencepiece one
+huggingface_hub
+pyyaml
+tqdm
+imageio-ffmpeg         # bundles an ffmpeg binary; no system ffmpeg needed
+
+# --- the service itself ------------------------------------------------------
+fastapi
+uvicorn
+python-multipart
+
+# --- the per-rig bake --------------------------------------------------------
+# Blender as an importable module, so no separate Blender install is required.
+# Only published for CPython 3.11 and 3.13 — there is NO 3.12 wheel — which is
+# why run_server provisions 3.13. Large (~323 MB).
+#
+# If this is unavailable on your platform the service falls back to a Blender
+# executable found on PATH (or $BLENDER); see mocap_paths.find_blender.
+bpy>=5.1; python_version >= "3.13"

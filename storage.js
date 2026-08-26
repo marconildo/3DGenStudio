@@ -220,6 +220,17 @@ export const DEFAULT_SETTINGS = {
       // encoder alone is ~16 GB of RAM once a prompt has been encoded.
       autoStart: false
     },
+    mocaptools: {
+      url: 'http://127.0.0.1',
+      port: '8401',
+      // Where the video-to-motion service keeps its ~460 MB checkpoint. Empty
+      // means the default folder inside the app's data dir (desktop) or
+      // thirdparty/mocapanything/MocapAnything/checkpoints (from source).
+      modelsPath: '',
+      // Desktop app: start the video-to-motion service at launch. Default off —
+      // a capture peaks around 10 GB of VRAM, which would sit next to rigging.
+      autoStart: false
+    },
     custom: []
   },
   // MCP automation endpoint (POST /mcp on the backend). With no token set,

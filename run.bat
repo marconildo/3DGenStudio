@@ -23,6 +23,14 @@ start "3DGenStudio Rigging" /min cmd /c "cd /d "%~dp0thirdparty\skintokens" && r
 :: GPU; the text encoder runs on the CPU in its own process and is freed when idle.
 start "3DGenStudio Kimodo" /min cmd /c "cd /d "%~dp0thirdparty\kimodo" && run_server.bat > kimodo-server.log 2>&1"
 
+:: Start the MoCapAnything video-to-motion service (Auto Rig > MoCap, port 8401)
+:: the same way. Its run_server.bat builds a venv + installs torch, Blender as a
+:: Python module (bpy, ~323 MB) and the checkpoint (~460 MB) on first launch, so
+:: the FIRST run takes a while; output goes to
+:: thirdparty\mocapanything\mocap-server.log. Needs an NVIDIA GPU; a 20-second
+:: capture peaks around 10 GB of VRAM.
+start "3DGenStudio MoCap" /min cmd /c "cd /d "%~dp0thirdparty\mocapanything" && run_server.bat > mocap-server.log 2>&1"
+
 :: Wait a few seconds to let Vite + the backend spin up
 timeout /t 3 /nobreak >nul
 

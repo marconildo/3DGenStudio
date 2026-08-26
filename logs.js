@@ -78,6 +78,14 @@ export const LOG_SOURCES = [
     desktopOnly: true,
   },
   {
+    id: 'mocap',
+    file: 'mocap.log',
+    devFile: 'thirdparty/mocapanything/mocap-server.log',
+    label: 'MoCap Service',
+    description: 'MoCapAnything video-to-motion: per-rig preparation (Blender) and video capture.',
+    desktopOnly: true,
+  },
+  {
     id: 'comfyui',
     file: 'comfyui.log',
     label: 'ComfyUI',
