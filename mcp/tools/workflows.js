@@ -6,6 +6,133 @@ import { toolHandler, createProgressReporter } from '../client.js';
 import { attachResultsToNode, resolveNodeTarget, resolveNodeInputAssets } from '../nodeResults.js';
 
 const FILE_PARAM_TYPES = ['image', 'mesh', 'video'];
+const SCALAR_EXAMPLES = { string: '"a red robot"', number: '42', boolean: 'true' };
+
+function isPlainObject(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+// A parameter's effective value type, mirroring the server: the configured
+// valueType, falling back to the type inferred from the graph input.
+function parameterValueType(parameter) {
+  const configured = String(parameter?.valueType || '').toLowerCase();
+  if (['string', 'number', 'boolean', 'image', 'video', 'mesh'].includes(configured)) return configured;
+  const inferred = String(parameter?.type || '').toLowerCase();
+  return ['number', 'boolean'].includes(inferred) ? inferred : 'string';
+}
+
+// Small models reliably wrap a parameter value in a redundant object or a
+// one-element array — {"6.text": {"value": "a cat"}} — and nothing downstream
+// notices: the server stringifies the object into the literal "[object Object]"
+// for a string parameter, and turns it into NaN (→ the default) for a number.
+// Unwrap the one unambiguous shape, a lone "value" key or a one-element array,
+// so the run does what the caller meant. Never applied to a json parameter,
+// where an object or an array IS the value.
+function unwrapScalarValue(raw) {
+  let value = raw;
+  let unwrapped = false;
+
+  // Bounded: a doubly-wrapped value is still worth fixing, but this must never
+  // walk a deep or self-referential structure.
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (isPlainObject(value) && Object.keys(value).length === 1 && 'value' in value) {
+      value = value.value;
+      unwrapped = true;
+      continue;
+    }
+    if (Array.isArray(value) && value.length === 1) {
+      value = value[0];
+      unwrapped = true;
+      continue;
+    }
+    break;
+  }
+
+  return { value, unwrapped };
+}
+
+// Catch the input mistakes that would otherwise run to completion on the WRONG
+// values, which is far worse for a caller than an error it can correct: an
+// `inputs` key matching no parameter is silently ignored by the server
+// (applyComfyParametersToWorkflow only reads the workflow's own parameter ids),
+// and a non-scalar value for a string/number parameter is coerced into
+// "[object Object]"/the default. Recoverable shapes are fixed and reported as
+// warnings; the rest throw before anything is queued in ComfyUI.
+function normalizeWorkflowInputs({ inputs, fileInputs, workflowDef }) {
+  const parameters = workflowDef?.parameters;
+  // No definition to check against (the library fetch failed) — pass through
+  // rather than blocking a run over a missing projection.
+  if (!Array.isArray(parameters) || parameters.length === 0) {
+    return { inputs: inputs || {}, warnings: [] };
+  }
+
+  const byId = new Map(parameters.map(parameter => [String(parameter.id), parameter]));
+  const problems = [];
+  const warnings = [];
+  const normalized = {};
+
+  for (const [key, raw] of Object.entries(inputs || {})) {
+    const parameter = byId.get(key);
+    if (!parameter) {
+      problems.push(`"${key}" is not a parameter of this workflow.`);
+      continue;
+    }
+
+    // A json parameter takes its value verbatim, wrapper-shaped or not.
+    if (String(parameter.type || '').toLowerCase() === 'json') {
+      normalized[key] = raw;
+      continue;
+    }
+
+    const valueType = parameterValueType(parameter);
+    const isFileParam = FILE_PARAM_TYPES.includes(valueType);
+    const { value, unwrapped } = unwrapScalarValue(raw);
+
+    if (unwrapped) {
+      warnings.push(`"${key}": pass the bare value (${JSON.stringify(value)}); the wrapper in ${JSON.stringify(raw)} was stripped. inputs maps a parameter id straight to its value.`);
+    }
+
+    // Explicit null/undefined means "no value", which the server would render
+    // as the string "null" — drop it so the default (or, for a file parameter,
+    // the target node's wiring) applies instead.
+    if (value === null || value === undefined) {
+      warnings.push(`"${key}": dropped (no value given) — omit a parameter to use its default.`);
+      continue;
+    }
+
+    // File parameters legitimately take object markers ({assetId}, {__none:true}).
+    if (!isFileParam && typeof value === 'object') {
+      problems.push(`"${key}" is a ${valueType} parameter but was given ${JSON.stringify(raw)}. Pass a bare ${valueType} (e.g. ${SCALAR_EXAMPLES[valueType] || '"value"'}), never an object or array.`);
+      continue;
+    }
+
+    normalized[key] = value;
+  }
+
+  for (const key of Object.keys(fileInputs || {})) {
+    const parameter = byId.get(key);
+    if (!parameter) {
+      problems.push(`fileInputs "${key}" is not a parameter of this workflow.`);
+      continue;
+    }
+    const valueType = parameterValueType(parameter);
+    if (!FILE_PARAM_TYPES.includes(valueType)) {
+      problems.push(`fileInputs "${key}" is a ${valueType} parameter, not a file parameter — put its value in inputs instead.`);
+    }
+  }
+
+  if (problems.length > 0) {
+    throw new Error([
+      `Invalid run_workflow inputs for "${workflowDef.name}" (workflow ${workflowDef.id}):`,
+      ...problems.map(problem => `  - ${problem}`),
+      'inputs is a FLAT map of parameter id -> bare value, e.g. {"6.text": "a red robot", "7.noise_seed": 42}.',
+      `This workflow's parameters: ${parameters.map(parameter => `"${parameter.id}" (${parameterValueType(parameter)})`).join(', ')}.`,
+      `Call list_workflows with workflowId ${workflowDef.id} for their names, defaults and allowed values.`
+    ].join('\n'));
+  }
+
+  return { inputs: normalized, warnings };
+}
 
 // Strip the raw graph JSON from workflow records so list responses stay small.
 function summarizeWorkflow(workflow) {
@@ -202,7 +329,7 @@ export function registerWorkflowTools(server, { api, notifyMutation }) {
     inputSchema: {
       workflowId: z.number().int().describe('Saved workflow id (from list_workflows)'),
       projectId: z.number().int().optional().describe('Project to attach results to (required unless persistGeneratedAssets=false)'),
-      inputs: z.record(z.string(), z.any()).default({}).describe('Parameter id -> value. For an image/mesh parameter pass the asset\'s numeric id (from list_assets / a generation result) — this is ALL you need. The SAME plain id works for a root asset, an edit, or a version (e.g. a background-removed image is an edit — pass that edit\'s own id). Do NOT pass a file path/filename, and do NOT pass a {assetId, editId} object — a bare number is correct. Non-file parameters take their literal value (string/number/boolean).'),
+      inputs: z.record(z.string(), z.any()).default({}).describe('A FLAT map of parameter id -> BARE value: {"6.text": "a red robot", "7.noise_seed": 42}. Never wrap a value in an object or array ({"6.text": {"value": "..."}} is rejected). Ids come from list_workflows and look like "<nodeId>.<inputKey>" — an unknown id is an error, and an omitted parameter keeps its saved default. For an image/mesh parameter pass the asset\'s numeric id (from list_assets / a generation result) — this is ALL you need. The SAME plain id works for a root asset, an edit, or a version (e.g. a background-removed image is an edit — pass that edit\'s own id). Do NOT pass a file path/filename, and do NOT pass a {assetId, editId} object — a bare number is correct. Non-file parameters take their literal value (string/number/boolean).'),
       fileInputs: z.record(z.string(), z.string()).optional().describe('Parameter id -> absolute local file path to upload for image/mesh/video parameters'),
       nodeId: z.number().int().optional().describe('Graph node to attach the results to (graph projects) — the correct way to fill a node; without it the generated assets are saved but no node displays them'),
       cardId: z.union([z.number().int(), z.string()]).optional().describe('Existing KANBAN card to attach the run to (kanban projects). For graph nodes use nodeId — a graph node id passed here is auto-routed to that node'),
@@ -241,6 +368,12 @@ export function registerWorkflowTools(server, { api, notifyMutation }) {
       .map(parameter => ({ id: parameter.id, type: String(parameter.valueType || '').toLowerCase() }))
       .filter(parameter => FILE_PARAM_TYPES.includes(parameter.type));
 
+    // Repair the recoverable input shapes and reject the rest BEFORE the run is
+    // queued, so a bad call comes back as a correctable error instead of a
+    // "successful" generation on default values.
+    const { inputs: normalizedInputs, warnings: inputWarnings } =
+      normalizeWorkflowInputs({ inputs, fileInputs, workflowDef });
+
     // Auto-fill each unset image/mesh/video parameter from a connected input of
     // the matching type (each connected asset used at most once). Explicit `inputs`
     // and `fileInputs` always win over an auto-filled value.
@@ -248,7 +381,7 @@ export function registerWorkflowTools(server, { api, notifyMutation }) {
     if (nodeInputAssets.length > 0 && fileParams.length > 0) {
       const available = nodeInputAssets.map(asset => ({ ...asset, used: false }));
       for (const parameter of fileParams) {
-        const explicitlySet = (inputs[parameter.id] !== undefined && inputs[parameter.id] !== null)
+        const explicitlySet = (normalizedInputs[parameter.id] !== undefined && normalizedInputs[parameter.id] !== null)
           || (fileInputs && fileInputs[parameter.id]);
         if (explicitlySet) continue;
         const match = available.find(asset => !asset.used && asset.type === parameter.type);
@@ -306,7 +439,7 @@ export function registerWorkflowTools(server, { api, notifyMutation }) {
       if (persistProcessingCard === false) form.append('persistProcessingCard', 'false');
       if (persistGeneratedAssets === false) form.append('persistGeneratedAssets', 'false');
 
-      const inputValues = { ...autoInputs, ...inputs };
+      const inputValues = { ...autoInputs, ...normalizedInputs };
       for (const [key, localPath] of Object.entries(fileInputs || {})) {
         const fieldName = `comfyFile:${key}`;
         const buffer = await fs.readFile(localPath);
@@ -327,6 +460,7 @@ export function registerWorkflowTools(server, { api, notifyMutation }) {
         return {
           status: 'running',
           promptId,
+          ...(inputWarnings.length > 0 ? { warnings: inputWarnings } : {}),
           note: `Still running after ${timeoutSeconds}s. The workflow continues in the background — call get_run_status with this promptId to check on it; results are attached to the project when it finishes.`
         };
       }
@@ -355,6 +489,7 @@ export function registerWorkflowTools(server, { api, notifyMutation }) {
         status: 'completed',
         promptId,
         assets,
+        ...(inputWarnings.length > 0 ? { warnings: inputWarnings } : {}),
         ...(nodeAttachment ? { nodeAttachment } : {})
       };
     } finally {

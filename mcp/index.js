@@ -128,6 +128,10 @@ const INSTRUCTION_BLOCKS = [
   },
   {
     groups: ['workflows'],
+    text: '- run_workflow inputs is a FLAT map of parameter id -> BARE value: {"6.text": "a red robot", "7.noise_seed": 42}. Never wrap a value in an object or an array — {"6.text": {"value": "a red robot"}} is wrong. Parameter ids come from list_workflows and look like "<nodeId>.<inputKey>"; pass them exactly, and only for the parameters you want to change (an omitted parameter keeps its saved default). An unknown id or a wrapped value is rejected with an error listing the workflow\'s real parameter ids.'
+  },
+  {
+    groups: ['workflows'],
     text: '- ComfyUI: list_workflows returns a COMPACT SUMMARY (id, name, parameter counts) — the library is far too large to return in full. Find the one you want, then call list_workflows again with its name (or workflowId) to get the parameters run_workflow needs. Do not ask for detail:"full" across the whole library. import_workflow adds new ones (inspect_workflow first to discover inputs/outputs). run_workflow blocks with progress until the assets are ready. ComfyUI itself must be running (URL in get_settings).'
   },
   {
