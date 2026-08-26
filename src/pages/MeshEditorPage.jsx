@@ -9274,7 +9274,7 @@ export default function MeshEditorPage() {
                         allowPan={activeMenu !== 'projection' || !!projectionMaskEditLayerId}
                         lockToCenter={activeMenu === 'projection' && !projectionMaskEditLayerId}
                       />
-                      {orbitEnabled && <ViewGizmo />}
+                      {orbitEnabled && <ViewGizmo geometry={geometry} />}
                     </Canvas>
                     {selectionBox && activeMenu === 'modeling' && (
                       <div
