@@ -700,8 +700,21 @@ function KimodoTab({ animation, kimodo }) {
 // What that buys is a result needing no bone mapping at all: the service is
 // conditioned on this rig, so the clip comes back on these exact bone names.
 // That is why there is no "Map bones" step here and one in every other tab.
+// A whole number stays whole: "10s" reads as a limit, "10.0s" reads as a
+// measurement of one.
+function formatSeconds(value) {
+  const n = Number(value) || 0
+  return Number.isInteger(n) ? String(n) : n.toFixed(1)
+}
+
+function formatFps(value) {
+  const n = Number(value) || 0
+  return Number.isInteger(n) ? String(n) : String(Math.round(n * 100) / 100)
+}
+
 function MoCapTab({ animation, mocap }) {
   const m = mocap || {}
+  const cap = m.capture || {}
   const busy = !!m.running || !!m.preparing
   const ready = !!m.rigId && !!m.prepared
 
@@ -779,23 +792,77 @@ function MoCapTab({ animation, mocap }) {
           reads as the body teleporting.
         </span>
 
+        {/* Length is free-form rather than a preset list because the cost is
+            continuous: one forward pass over the whole clip, so every extra
+            second is more VRAM. The estimate below is the point of the field —
+            it is what turns "how long?" into a question the user's card can
+            answer. */}
         <label className="mesh-editor-anim__field">
-          <span className="mesh-editor-panel__hint">Length to capture</span>
-          <select
+          <span className="mesh-editor-panel__hint">Length to capture (seconds)</span>
+          <input
+            type="number"
             className="mesh-editor-panel__input"
-            value={m.maxFrames ?? 301}
-            onChange={e => m.onMaxFramesChange?.(Number(e.target.value))}
+            min={cap.minSeconds ? Math.ceil(cap.minSeconds * 2) / 2 : 1}
+            max={cap.maxSeconds ? Math.floor(cap.maxSeconds * 2) / 2 : 10}
+            step="0.5"
+            value={cap.seconds ?? ''}
+            onChange={e => m.onSecondsChange?.(e.target.value)}
             disabled={busy}
-          >
-            {(m.framePresets || []).map(p => (
-              <option key={p.value} value={p.value}>{p.label}</option>
-            ))}
-          </select>
+            aria-label="Length to capture in seconds"
+          />
         </label>
-        {/* The cap is the model's, and past it the video is silently truncated,
-            so say what will actually be captured rather than let it surprise. */}
+
+        {cap.valid ? (
+          <>
+            <span
+              className="mesh-editor-panel__hint"
+              style={{ display: 'flex', alignItems: 'center', gap: '0.4em',
+                color: cap.vram >= 10 ? '#e0a030' : '#8ff5ff' }}
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: '1.1em' }}>memory</span>
+              <span>
+                About {cap.vram.toFixed(1)} GB of VRAM &mdash; {cap.frames} frames
+                at {formatFps(cap.fps)} fps.
+              </span>
+            </span>
+            {/* Everything that can make the capture shorter than asked for. The
+                cap is the model's and truncation upstream is silent, so it has
+                to be said here or not at all. */}
+            {cap.cappedSeconds != null && (
+              <span className="mesh-editor-panel__hint">
+                Capped at {formatSeconds(cap.cappedSeconds)}s &mdash; the model takes at most
+                {' '}{cap.maxFrames} frames in one pass.
+              </span>
+            )}
+            {cap.flooredSeconds != null && (
+              <span className="mesh-editor-panel__hint">
+                Raised to {formatSeconds(cap.flooredSeconds)}s &mdash; the model needs at least
+                {' '}{cap.minFrames} frames.
+              </span>
+            )}
+            {cap.videoSeconds != null && cap.videoSeconds < cap.effectiveSeconds - 0.05 && (
+              <span className="mesh-editor-panel__hint">
+                This video is only {formatSeconds(cap.videoSeconds)}s long, so that is all
+                that will be captured.
+              </span>
+            )}
+            {/* Seconds only become frames at the video's own rate, so which rate
+                the estimate used is part of the estimate. */}
+            {cap.probing ? (
+              <span className="mesh-editor-panel__hint">Reading this video&apos;s frame rate…</span>
+            ) : !cap.fpsKnown && (
+              <span className="mesh-editor-panel__hint">
+                {m.hasVideo
+                  ? `This video's frame rate could not be read, so ${formatFps(cap.fps)} fps is assumed — at a different rate the capture covers a different length.`
+                  : `Assuming ${formatFps(cap.fps)} fps until a video is chosen.`}
+              </span>
+            )}
+          </>
+        ) : (
+          <span className="mesh-editor-panel__hint">Enter how many seconds to capture.</span>
+        )}
         <span className="mesh-editor-panel__hint">
-          Longer captures need more VRAM. Only the beginning of a longer video is used.
+          Only the beginning of a longer video is used.
         </span>
 
         <button

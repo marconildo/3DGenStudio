@@ -31,15 +31,133 @@ export const MOCAP_SOURCE_ID = 'mocap'
 // The model runs one forward pass over the whole clip with no chunking, so VRAM
 // scales with length: ~2 GB of weights plus ~16 MiB per frame (measured), and
 // the upstream code caps the sequence at 301 frames and silently truncates past
-// it. Exposed so the panel can offer a shorter window on a smaller card rather
-// than letting a long clip OOM.
+// it. Exposed so the panel can hold the user's chosen length inside what the
+// model accepts, rather than letting a long clip OOM or truncate unannounced.
 export const MOCAP_MAX_FRAMES = 301
 export const MOCAP_MIN_FRAMES = 32
-export const MOCAP_FRAME_PRESETS = [
-  { value: 100, label: 'Short — ~7s (≈6.5 GB VRAM)' },
-  { value: 200, label: 'Medium — ~13s (≈9 GB VRAM)' },
-  { value: 301, label: 'Full — ~20s (≈10.5 GB VRAM)' },
-]
+
+// What the user asks for is a LENGTH; what the service takes is a frame count.
+// The two are only related by the video's own frame rate, because the pipeline
+// extracts every frame of the clip (no resampling) and then keeps the first
+// `maxFrames` of them. So seconds cannot be converted without the video —
+// `detectVideoFps` measures it, and this is what stands in until then.
+export const MOCAP_ASSUMED_FPS = 30
+export const MOCAP_DEFAULT_SECONDS = 5
+
+// Reserved VRAM against capture length, measured on the shipped checkpoint:
+// 6.5 GB at 100 frames, 9 GB at 200, 10.5 GB at 301. Not a formula because the
+// curve is not one — it is one forward pass over the whole clip, and the growth
+// per frame flattens as the attention buffers stop being the peak. Between the
+// anchors it interpolates; below 100 it follows the first segment's slope down
+// to the floor, which is the weights plus the DINOv2/T5 encoders — resident
+// whatever the length.
+const MOCAP_VRAM_ANCHORS = [[100, 6.5], [200, 9.0], [301, 10.5]]
+const MOCAP_VRAM_FLOOR = 4.5
+
+// Estimated peak VRAM, in GB, for a capture of `frames` frames.
+export function estimateMocapVram(frames) {
+  const f = Number(frames) || 0
+  let i = 0
+  while (i < MOCAP_VRAM_ANCHORS.length - 2 && f > MOCAP_VRAM_ANCHORS[i + 1][0]) i += 1
+  const [f0, g0] = MOCAP_VRAM_ANCHORS[i]
+  const [f1, g1] = MOCAP_VRAM_ANCHORS[i + 1]
+  return Math.max(MOCAP_VRAM_FLOOR, g0 + (f - f0) * ((g1 - g0) / (f1 - f0)))
+}
+
+// Seconds -> the frame count to send, clamped to what the model accepts. The
+// clamp is here rather than in the field so the user can type freely (and see
+// what the cap costs them) instead of having the value snatched mid-keystroke.
+export function mocapFramesForSeconds(seconds, fps = MOCAP_ASSUMED_FPS) {
+  const rate = Number(fps) > 0 ? Number(fps) : MOCAP_ASSUMED_FPS
+  const frames = Math.round((Number(seconds) || 0) * rate)
+  return Math.max(MOCAP_MIN_FRAMES, Math.min(MOCAP_MAX_FRAMES, frames))
+}
+
+// The longest capture the model can take from a video at this frame rate.
+export function mocapMaxSeconds(fps = MOCAP_ASSUMED_FPS) {
+  const rate = Number(fps) > 0 ? Number(fps) : MOCAP_ASSUMED_FPS
+  return MOCAP_MAX_FRAMES / rate
+}
+
+// Frame rates worth snapping a measurement to. A median over a handful of
+// samples lands a hair off the real rate (29.97 reads as 30.03), and showing
+// "29.7 fps" would look like a property of the file rather than of our sampling.
+const MOCAP_STANDARD_FPS = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60, 100, 120]
+
+function medianFps(mediaTimes) {
+  const gaps = []
+  for (let i = 1; i < mediaTimes.length; i += 1) {
+    const gap = mediaTimes[i] - mediaTimes[i - 1]
+    // A callback can fire twice for one presented frame; a zero gap is not a rate.
+    if (gap > 1e-4) gaps.push(gap)
+  }
+  if (gaps.length < 3) return null
+  gaps.sort((a, b) => a - b)
+  const raw = 1 / gaps[Math.floor(gaps.length / 2)]
+  if (!Number.isFinite(raw) || raw <= 0) return null
+  const standard = MOCAP_STANDARD_FPS.find(f => Math.abs(f - raw) / f < 0.04)
+  return standard || Math.round(raw * 100) / 100
+}
+
+// Measure a video's frame rate and duration in the browser.
+//
+// There is no fps on HTMLVideoElement, and the container does not have to carry
+// one either, so the only honest way to get it is to watch frames arrive: play
+// the opening moments muted and take the median gap between presented frames.
+// Costs about a second and never throws — a null fps means "assume the default
+// and say so", which is strictly better than silently promising a length the
+// clip will not deliver.
+export async function detectVideoFps(file, { samples = 16, timeoutMs = 6000 } = {}) {
+  if (!file || typeof document === 'undefined') return { fps: null, duration: null }
+
+  const url = URL.createObjectURL(file)
+  const video = document.createElement('video')
+  video.muted = true
+  video.playsInline = true
+  video.preload = 'auto'
+  video.src = url
+
+  try {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { cleanup(); reject(new Error('timeout')) }, timeoutMs)
+      const ok = () => { cleanup(); resolve() }
+      const fail = () => { cleanup(); reject(new Error('unreadable')) }
+      function cleanup() {
+        clearTimeout(timer)
+        video.removeEventListener('loadedmetadata', ok)
+        video.removeEventListener('error', fail)
+      }
+      video.addEventListener('loadedmetadata', ok)
+      video.addEventListener('error', fail)
+    })
+
+    const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : null
+    if (typeof video.requestVideoFrameCallback !== 'function') return { fps: null, duration }
+
+    const times = []
+    const fps = await new Promise(resolve => {
+      const timer = setTimeout(() => resolve(medianFps(times)), timeoutMs)
+      const finish = value => { clearTimeout(timer); resolve(value) }
+      const onFrame = (_now, meta) => {
+        times.push(meta.mediaTime)
+        if (times.length > samples) { finish(medianFps(times)); return }
+        video.requestVideoFrameCallback(onFrame)
+      }
+      video.requestVideoFrameCallback(onFrame)
+      // Muted playback is allowed without a gesture; if it is refused anyway,
+      // no frames are ever presented, so give up rather than wait out the timer.
+      video.play().catch(() => finish(null))
+    })
+    return { fps, duration }
+  } catch {
+    return { fps: null, duration: null }
+  } finally {
+    try { video.pause() } catch { /* already torn down */ }
+    video.removeAttribute('src')
+    video.load()
+    URL.revokeObjectURL(url)
+  }
+}
 
 // NOTE: unlike the mesh/rigging/motion services, this one is not yet managed by
 // the desktop app (electron/main.cjs provisions a venv per service, and MoCap

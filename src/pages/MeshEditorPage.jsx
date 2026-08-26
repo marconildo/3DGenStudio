@@ -171,7 +171,9 @@ import { describeClip, applyFrameEdit, applyFrameOperation, applyFrameRotation, 
   copyFramePose, pasteFramePose, ensurePositionTrack, clearFrameValue, smoothLoopSeam,
   restoreTrackValues, frameTime,
   DEFAULT_EDIT_SCOPE, DEFAULT_EDIT_SPAN } from '../utils/animationEdit'
-import { MOCAP_SOURCE_ID, MOCAP_MAX_FRAMES, MOCAP_FRAME_PRESETS, inspectMocapRig,
+import { MOCAP_SOURCE_ID, MOCAP_MAX_FRAMES, MOCAP_MIN_FRAMES, MOCAP_ASSUMED_FPS,
+  MOCAP_DEFAULT_SECONDS, estimateMocapVram, mocapFramesForSeconds, mocapMaxSeconds,
+  detectVideoFps, inspectMocapRig,
   prepareMocapRig, generateMocapClip, mocapIdentityMapping, mocapRigKey,
   forgetMocapRig, MOCAP_BONE_GROUPS } from '../utils/mocapGen'
 import { KIMODO_SOURCE_ID, countPromptSegments, generateMotionClip, loadKimodoSkeletonSource,
@@ -5827,7 +5829,18 @@ export default function MeshEditorPage() {
   const [mocapError, setMocapError] = useState(null)
   const [mocapServiceError, setMocapServiceError] = useState(null)
   const [mocapVideo, setMocapVideo] = useState(null)
-  const [mocapMaxFrames, setMocapMaxFrames] = useState(MOCAP_MAX_FRAMES)
+  // Length is held as the typed STRING: clamping it to the model's window while
+  // the user is still typing would fight the keyboard (a "1" on the way to "12"
+  // would snap up to the minimum). The clamp happens when the capture runs.
+  const [mocapSeconds, setMocapSeconds] = useState(String(MOCAP_DEFAULT_SECONDS))
+  // Measured off the chosen file, because seconds only become frames — the unit
+  // the service caps — at the video's own rate. Null until measured, or when the
+  // browser will not tell us.
+  const [mocapVideoFps, setMocapVideoFps] = useState(null)
+  const [mocapVideoDuration, setMocapVideoDuration] = useState(null)
+  // Measuring the rate means watching frames play, so it takes about a second.
+  // Tracked so the panel can say "reading it" instead of "could not read it".
+  const [mocapVideoProbing, setMocapVideoProbing] = useState(false)
   const [mocapLastStats, setMocapLastStats] = useState(null)
   // The bake is keyed by the SKELETON. Editing bones after preparing changes that
   // key, so the bake on disk no longer describes this rig — compared on every
@@ -5923,6 +5936,58 @@ export default function MeshEditorPage() {
     return source
   }, [resetAnimEdits])
 
+  // Picking a video is what makes the length field concrete: measure the clip's
+  // frame rate (and duration) so the estimate below the field describes THIS
+  // file instead of an assumed rate. The token guards against a slow measurement
+  // for a file the user has already replaced.
+  const mocapVideoTokenRef = useRef(0)
+  const handleMocapVideoChange = useCallback(file => {
+    const token = mocapVideoTokenRef.current + 1
+    mocapVideoTokenRef.current = token
+    setMocapVideo(file || null)
+    setMocapVideoFps(null)
+    setMocapVideoDuration(null)
+    setMocapVideoProbing(!!file)
+    if (!file) return
+    void detectVideoFps(file).then(({ fps, duration }) => {
+      if (mocapVideoTokenRef.current !== token) return
+      setMocapVideoFps(fps || null)
+      setMocapVideoDuration(duration || null)
+      setMocapVideoProbing(false)
+    })
+  }, [])
+
+  // Everything the length field needs to explain itself: the frames the typed
+  // seconds come to, what that costs in VRAM, and the two ways the capture can
+  // end up shorter than asked (the model's 301-frame window, or a shorter clip).
+  const mocapCapture = useMemo(() => {
+    const fps = mocapVideoFps || MOCAP_ASSUMED_FPS
+    const seconds = Number(mocapSeconds)
+    const valid = Number.isFinite(seconds) && seconds > 0
+    const frames = mocapFramesForSeconds(valid ? seconds : MOCAP_DEFAULT_SECONDS, fps)
+    const maxSeconds = mocapMaxSeconds(fps)
+    const minSeconds = MOCAP_MIN_FRAMES / fps
+    return {
+      seconds: mocapSeconds,
+      valid,
+      frames,
+      fps,
+      fpsKnown: !!mocapVideoFps,
+      probing: mocapVideoProbing,
+      vram: estimateMocapVram(frames),
+      minFrames: MOCAP_MIN_FRAMES,
+      maxFrames: MOCAP_MAX_FRAMES,
+      minSeconds,
+      maxSeconds,
+      // Only set when the request actually left the model's window, so the panel
+      // does not have to re-derive the comparison to know whether to mention it.
+      cappedSeconds: valid && seconds > maxSeconds ? maxSeconds : null,
+      flooredSeconds: valid && seconds < minSeconds ? minSeconds : null,
+      effectiveSeconds: frames / fps,
+      videoSeconds: mocapVideoDuration,
+    }
+  }, [mocapSeconds, mocapVideoFps, mocapVideoDuration, mocapVideoProbing])
+
   const handleMocapGenerate = useCallback(async () => {
     if (mocapRunning || !mocapVideo || !mocapRigId) return
     setMocapRunning(true)
@@ -5938,7 +6003,7 @@ export default function MeshEditorPage() {
       const { clip, source, bvh, stats } = await generateMocapClip({
         videoFile: mocapVideo,
         rigId: mocapRigId,
-        maxFrames: mocapMaxFrames,
+        maxFrames: mocapCapture.frames,
         name,
         onProgress: setMocapProgress,
       })
@@ -5982,9 +6047,8 @@ export default function MeshEditorPage() {
       setMocapRunning(false)
       setMocapProgress(null)
     }
-  }, [mocapRunning, mocapVideo, mocapRigId, mocapMaxFrames, mocapDrive,
+  }, [mocapRunning, mocapVideo, mocapRigId, mocapCapture, mocapDrive,
     ensureAnimTargetScene, installMocapSource])
-
 
   const kimodoPanelProps = useMemo(() => ({
     prompt: kimodoPrompt,
@@ -6062,10 +6126,9 @@ export default function MeshEditorPage() {
     onPrepare: handleMocapPrepare,
     hasVideo: !!mocapVideo,
     videoName: mocapVideo?.name || '',
-    onVideoChange: setMocapVideo,
-    maxFrames: mocapMaxFrames,
-    onMaxFramesChange: setMocapMaxFrames,
-    framePresets: MOCAP_FRAME_PRESETS,
+    onVideoChange: handleMocapVideoChange,
+    capture: mocapCapture,
+    onSecondsChange: setMocapSeconds,
     boneGroups: MOCAP_BONE_GROUPS,
     drive: mocapDrive,
     onDriveToggle: handleMocapDriveToggle,
@@ -6087,7 +6150,8 @@ export default function MeshEditorPage() {
     onGenerate: handleMocapGenerate,
   }), [refreshMocapRigState, mocapRigId, mocapPrepared, mocapPreparedJoints, skeleton, mocapStale,
     mocapPreparing, mocapPrepareProgress, handleMocapPrepare, mocapVideo,
-    mocapMaxFrames, mocapRunning, mocapProgress, mocapError, mocapServiceError,
+    handleMocapVideoChange, mocapCapture,
+    mocapRunning, mocapProgress, mocapError, mocapServiceError,
     mocapLastStats, handleMocapGenerate, mocapDrive, handleMocapDriveToggle,
     animReferenceId, handCurl, handleHandCurlChange, handleHandCurlCommit])
 
