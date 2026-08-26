@@ -49,6 +49,26 @@
 ; Number of links neutralized in this run, used to decide whether to tell the user.
 Var /GLOBAL purgedLinkCount
 
+; electron-builder 26.x added a PowerShell fast path to the vendor FIND_PROCESS /
+; KILL_PROCESS macros, gated on $IsPowerShellAvailable. That variable is declared by
+; IS_POWERSHELL_AVAILABLE, which CHECK_APP_RUNNING only inserts when NO
+; customCheckAppRunning is defined - i.e. never for us (see below). Inserting
+; FIND_PROCESS therefore compiles a reference to a variable that does not exist:
+;   warning 6000: unknown variable/constant "IsPowerShellAvailable" detected
+; and since electron-builder runs makensis with warnings-as-errors, that aborts
+; `electron-builder --win` at the uninstaller step. It surfaced when the electron /
+; electron-builder dependencies were updated.
+;
+; We declare it here and pin it to 1 ("PowerShell not available") in
+; customCheckAppRunning, so FIND_PROCESS keeps taking its tasklist branch. That is
+; not a fallback, it is required for correctness: the PowerShell branch matches ANY
+; process whose image path lies under $INSTDIR - python.exe from the Mesh Tools /
+; rigging / motion services included - while the kill below is APP_TASKKILL, which
+; only ever targets ${APP_EXECUTABLE_FILENAME}. Mixing the two would give a check
+; that keeps reporting "still running" for a process the kill can never touch: an
+; endless prompt loop instead of an install.
+Var /GLOBAL IsPowerShellAvailable
+
 ; Generates PurgeLinks (installer) / un.PurgeLinks (uninstaller) from one body.
 ; Usage: Push "<absolute directory>" then Call ${UN}PurgeLinks
 ;
@@ -193,6 +213,8 @@ FunctionEnd
 
     System::Call 'kernel32::GetCurrentProcessId()i.R2'
     StrCpy $R1 0
+    ; Keep FIND_PROCESS on tasklist - see the $IsPowerShellAvailable note above.
+    StrCpy $IsPowerShellAvailable 1
 
     ${Do}
       !insertmacro FIND_PROCESS "${APP_EXECUTABLE_FILENAME}" $R0
