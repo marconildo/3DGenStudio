@@ -557,7 +557,13 @@ async function setupMocap({ uv, serviceDir, venvDir, dataDir, modelsDir, onProgr
     }
   }
 
-  onProgress({ kind: 'phase', phase: 'Ready', pct: 1 });
+  // The marker is what isReady() checks — without it the install "succeeds" and
+  // the Settings card immediately offers to install again, because nothing on
+  // disk says it is done. Written last, so a failure above leaves the venv
+  // correctly marked as not-ready.
+  fs.writeFileSync(depsMarker(venvDir), new Date().toISOString());
+
+  onProgress({ kind: 'phase', phase: 'Video to motion ready', pct: 1 });
   onProgress({ kind: 'done' });
 }
 
