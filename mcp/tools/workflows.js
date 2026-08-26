@@ -51,6 +51,73 @@ function unwrapScalarValue(raw) {
   return { value, unwrapped };
 }
 
+// Local models served through LM Studio / Ollama routinely leak their chat
+// template's special tokens into the JSON of a tool call: a key arrives as
+// `<|"|>6.text<|"|>` instead of `6.text`. The run is then rejected for an
+// unknown parameter the model is certain it copied correctly, so it retries the
+// identical call forever. Strip the token markers (and the stray quoting that
+// comes with them) so the id underneath is recovered.
+const SPECIAL_TOKEN_PATTERN = /<\|[^|]*\|>/g;
+
+function stripSpecialTokens(text) {
+  return String(text).replace(SPECIAL_TOKEN_PATTERN, '');
+}
+
+// Parameter ids are "<nodeId>.<inputKey>" — word characters, dots and dashes.
+// Anything else clinging to either end (quotes, backslashes, angle brackets,
+// pipes, whitespace) is transport damage, not part of the id.
+function sanitizeParameterKey(key) {
+  return stripSpecialTokens(key).replace(/^[^\w.-]+/, '').replace(/[^\w.-]+$/, '').trim();
+}
+
+function pushInto(map, key, value) {
+  if (!key) return;
+  const list = map.get(key);
+  if (list) list.push(value);
+  else map.set(key, [value]);
+}
+
+// Match a caller's key to a real parameter id, tolerating the damage above and
+// the near-misses small models make: wrong case, the bare input key without its
+// node id ("text"), or the parameter's display name. A loose match only counts
+// when it is unambiguous — otherwise the key is reported as an error rather than
+// silently steering a run onto the wrong parameter.
+function createParameterResolver(parameters) {
+  const exact = new Set();
+  const byLowerId = new Map();
+  const byInputKey = new Map();
+  const byName = new Map();
+
+  for (const parameter of parameters) {
+    const id = String(parameter.id);
+    exact.add(id);
+    byLowerId.set(id.toLowerCase(), id);
+    const dot = id.indexOf('.');
+    pushInto(byInputKey, (dot >= 0 ? id.slice(dot + 1) : id).toLowerCase(), id);
+    if (parameter.name) pushInto(byName, String(parameter.name).toLowerCase(), id);
+  }
+
+  return function resolveParameterId(rawKey) {
+    const raw = String(rawKey);
+    if (exact.has(raw)) return { id: raw, repaired: false, damaged: false };
+
+    const cleaned = sanitizeParameterKey(raw);
+    const damaged = cleaned !== raw.trim();
+    if (!cleaned) return { id: null, repaired: false, damaged };
+    if (exact.has(cleaned)) return { id: cleaned, repaired: true, damaged };
+
+    const lower = cleaned.toLowerCase();
+    if (byLowerId.has(lower)) return { id: byLowerId.get(lower), repaired: true, damaged };
+
+    for (const map of [byInputKey, byName]) {
+      const hits = map.get(lower);
+      if (hits && hits.length === 1) return { id: hits[0], repaired: true, damaged };
+    }
+
+    return { id: null, repaired: false, damaged };
+  };
+}
+
 // Catch the input mistakes that would otherwise run to completion on the WRONG
 // values, which is far worse for a caller than an error it can correct: an
 // `inputs` key matching no parameter is silently ignored by the server
@@ -63,30 +130,41 @@ function normalizeWorkflowInputs({ inputs, fileInputs, workflowDef }) {
   // No definition to check against (the library fetch failed) — pass through
   // rather than blocking a run over a missing projection.
   if (!Array.isArray(parameters) || parameters.length === 0) {
-    return { inputs: inputs || {}, warnings: [] };
+    return { inputs: inputs || {}, fileInputs: fileInputs || undefined, warnings: [] };
   }
 
   const byId = new Map(parameters.map(parameter => [String(parameter.id), parameter]));
+  const resolveParameterId = createParameterResolver(parameters);
   const problems = [];
   const warnings = [];
   const normalized = {};
+  let sawTemplateTokens = false;
 
   for (const [key, raw] of Object.entries(inputs || {})) {
-    const parameter = byId.get(key);
-    if (!parameter) {
+    const { id, repaired, damaged } = resolveParameterId(key);
+    if (damaged) sawTemplateTokens = true;
+    if (!id) {
       problems.push(`"${key}" is not a parameter of this workflow.`);
       continue;
     }
+    if (repaired) {
+      warnings.push(`"${key}": read as parameter "${id}". Pass the id exactly as list_workflows reports it.`);
+    }
+    if (id in normalized) {
+      warnings.push(`"${key}": two inputs resolved to parameter "${id}" — the last one wins.`);
+    }
+
+    const parameter = byId.get(id);
 
     // A json parameter takes its value verbatim, wrapper-shaped or not.
     if (String(parameter.type || '').toLowerCase() === 'json') {
-      normalized[key] = raw;
+      normalized[id] = raw;
       continue;
     }
 
     const valueType = parameterValueType(parameter);
     const isFileParam = FILE_PARAM_TYPES.includes(valueType);
-    const { value, unwrapped } = unwrapScalarValue(raw);
+    let { value, unwrapped } = unwrapScalarValue(raw);
 
     if (unwrapped) {
       warnings.push(`"${key}": pass the bare value (${JSON.stringify(value)}); the wrapper in ${JSON.stringify(raw)} was stripped. inputs maps a parameter id straight to its value.`);
@@ -100,25 +178,43 @@ function normalizeWorkflowInputs({ inputs, fileInputs, workflowDef }) {
       continue;
     }
 
+    // The same template tokens that damage a key also land inside a prompt,
+    // where ComfyUI would generate from them verbatim.
+    if (typeof value === 'string') {
+      const cleanedValue = stripSpecialTokens(value).trim();
+      if (cleanedValue !== value) {
+        warnings.push(`"${key}": stripped chat-template tokens from the value.`);
+        sawTemplateTokens = true;
+        value = cleanedValue;
+      }
+    }
+
     // File parameters legitimately take object markers ({assetId}, {__none:true}).
     if (!isFileParam && typeof value === 'object') {
       problems.push(`"${key}" is a ${valueType} parameter but was given ${JSON.stringify(raw)}. Pass a bare ${valueType} (e.g. ${SCALAR_EXAMPLES[valueType] || '"value"'}), never an object or array.`);
       continue;
     }
 
-    normalized[key] = value;
+    normalized[id] = value;
   }
 
-  for (const key of Object.keys(fileInputs || {})) {
-    const parameter = byId.get(key);
-    if (!parameter) {
+  const normalizedFileInputs = {};
+  for (const [key, localPath] of Object.entries(fileInputs || {})) {
+    const { id, repaired, damaged } = resolveParameterId(key);
+    if (damaged) sawTemplateTokens = true;
+    if (!id) {
       problems.push(`fileInputs "${key}" is not a parameter of this workflow.`);
       continue;
     }
-    const valueType = parameterValueType(parameter);
+    if (repaired) {
+      warnings.push(`fileInputs "${key}": read as parameter "${id}".`);
+    }
+    const valueType = parameterValueType(byId.get(id));
     if (!FILE_PARAM_TYPES.includes(valueType)) {
       problems.push(`fileInputs "${key}" is a ${valueType} parameter, not a file parameter — put its value in inputs instead.`);
+      continue;
     }
+    normalizedFileInputs[id] = localPath;
   }
 
   if (problems.length > 0) {
@@ -127,11 +223,18 @@ function normalizeWorkflowInputs({ inputs, fileInputs, workflowDef }) {
       ...problems.map(problem => `  - ${problem}`),
       'inputs is a FLAT map of parameter id -> bare value, e.g. {"6.text": "a red robot", "7.noise_seed": 42}.',
       `This workflow's parameters: ${parameters.map(parameter => `"${parameter.id}" (${parameterValueType(parameter)})`).join(', ')}.`,
-      `Call list_workflows with workflowId ${workflowDef.id} for their names, defaults and allowed values.`
+      ...(sawTemplateTokens
+        ? ['Your keys arrived wrapped in chat-template tokens (e.g. <|"|>6.text<|"|>). Emit plain JSON: the key is exactly 6.text, with no markers, quotes or backslashes inside it.']
+        : []),
+      `Do not repeat this call unchanged — fix the ids listed above, or call list_workflows with workflowId ${workflowDef.id} for their names, defaults and allowed values.`
     ].join('\n'));
   }
 
-  return { inputs: normalized, warnings };
+  return {
+    inputs: normalized,
+    fileInputs: Object.keys(normalizedFileInputs).length > 0 ? normalizedFileInputs : undefined,
+    warnings
+  };
 }
 
 // Strip the raw graph JSON from workflow records so list responses stay small.
@@ -371,7 +474,7 @@ export function registerWorkflowTools(server, { api, notifyMutation }) {
     // Repair the recoverable input shapes and reject the rest BEFORE the run is
     // queued, so a bad call comes back as a correctable error instead of a
     // "successful" generation on default values.
-    const { inputs: normalizedInputs, warnings: inputWarnings } =
+    const { inputs: normalizedInputs, fileInputs: normalizedFileInputs, warnings: inputWarnings } =
       normalizeWorkflowInputs({ inputs, fileInputs, workflowDef });
 
     // Auto-fill each unset image/mesh/video parameter from a connected input of
@@ -382,7 +485,7 @@ export function registerWorkflowTools(server, { api, notifyMutation }) {
       const available = nodeInputAssets.map(asset => ({ ...asset, used: false }));
       for (const parameter of fileParams) {
         const explicitlySet = (normalizedInputs[parameter.id] !== undefined && normalizedInputs[parameter.id] !== null)
-          || (fileInputs && fileInputs[parameter.id]);
+          || (normalizedFileInputs && normalizedFileInputs[parameter.id]);
         if (explicitlySet) continue;
         const match = available.find(asset => !asset.used && asset.type === parameter.type);
         if (match) {
@@ -440,7 +543,7 @@ export function registerWorkflowTools(server, { api, notifyMutation }) {
       if (persistGeneratedAssets === false) form.append('persistGeneratedAssets', 'false');
 
       const inputValues = { ...autoInputs, ...normalizedInputs };
-      for (const [key, localPath] of Object.entries(fileInputs || {})) {
+      for (const [key, localPath] of Object.entries(normalizedFileInputs || {})) {
         const fieldName = `comfyFile:${key}`;
         const buffer = await fs.readFile(localPath);
         form.append(fieldName, new Blob([buffer]), path.basename(localPath));

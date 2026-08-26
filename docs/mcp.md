@@ -195,6 +195,16 @@ When you *do* pass an image/mesh parameter in `inputs` (e.g. in a kanban project
 
 **Connect the input nodes _before_ you run.** `run_workflow`, `edit_image`, and `generate_mesh` read a node's connected input at the moment they execute — the input feeds the workflow/API and determines whether the result is saved as an edit/version. So the correct order is always: (1) `create_node` for the target, (2) `connect_nodes` to wire its input asset(s), then (3) run the workflow or API on that node. Running first and connecting afterwards is wrong: the run sees no input, so it can't use the source image/mesh and saves a stray new root asset instead of an edit/version — and the late connection does **not** re-run or re-parent it. If you ran in the wrong order, delete the stray result, connect the inputs, and run again.
 
+### Small and local models (LM Studio, Ollama, …)
+
+`run_workflow`'s `inputs` is the one free-form map in the API — a flat parameter id -> bare value — and it is where a small model's output goes wrong. The server repairs what it can rather than rejecting the run, and reports each repair in the response's `warnings`:
+
+- **Chat-template tokens leaking into the JSON.** A locally served model regularly emits its own quote/special tokens inside a key, so `6.text` arrives as `<|"|>6.text<|"|>` (or with stray backslashes/quotes). Any `<|…|>` marker and non-id character around a key is stripped before the lookup, and the same markers are stripped from string values so they never reach a ComfyUI prompt.
+- **A near-miss id.** Wrong case (`6.TEXT`), the bare input key without its node id (`text`), or the parameter's display name (`Seed`) resolves to the real id **when the match is unambiguous**. Two parameters could answer to `text`, so that key is an error, not a guess.
+- **A wrapped value.** `{"6.text": {"value": "a red robot"}}` or a one-element array is unwrapped to the bare value.
+
+A key that still matches nothing is an error listing the workflow's real parameter ids — and, when template tokens were detected, an explicit note that the keys arrived wrapped. Left unrepaired this is a **retry loop**: the model is certain it copied the id correctly, so it re-issues the identical call forever.
+
 ### Parameter-heavy mesh tools
 
 Every mesh operation has a dedicated tool that declares each parameter in its schema with type, range, default, and description (mirroring the Python service's Pydantic models 1:1), so a client can set exactly what it needs and see the valid bounds: `auto_uv_mesh` (14 parameters), `auto_retopo_mesh` (20), `repair_mesh`, `auto_rig_mesh`, `optimize_mesh`, `convert_mesh_fbx`, `inspect_mesh`, `bake_mesh_maps`, `generate_collision`, `generate_lods`, `move_mesh_pivot`. Any subset of options may be set; unset keys fall back to the documented default. For Auto Retopo, the `shell_*` options apply only when `watertight` is `true`. `run_mesh_tool` still accepts every operation with a free-form options object for backward compatibility, but prefer the typed tools.
