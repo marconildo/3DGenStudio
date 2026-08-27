@@ -19,6 +19,7 @@
 
 | Date | Description |
 | --- | --- |
+| **2026-08-27** | Animations: Integrated MoCapAnythingV2 (video-to-motion)<br>MeshEditor: Added viewport gizmo and Perspective/Orthographic view<br>Updated npm packages<br>Fixed startup speed in dev mode<br>Animations: Added Horse animations from mesh2motion<br>Kanban: "Auto Rig" preselects the current displayed mesh<br>MCP: Improved input parameters validation (useful for small local llm)<br>SetupWizard: Added Trellis2 and Pixal3D ComfyUI Native |
 | **2026-08-24** | Animations: Integrated Kimodo<br>MCP: Added support for Tags<br>ComfyUI: Updated dependencies and nodes<br>QwenVL: Added new models |
 | **2026-08-21** | Assets: Can tag assets<br>Uninstaller: Can delete your data<br>Hitem3D: Added v3.0 model<br>TripoAI: Added 8K "extreme" texture quality<br>Graph: Added missing labels for external APIs<br>Optimize and LOD export: Added more options |
 | **2026-08-19** | Bake mode: Fixed colour too dark<br>Installer: Fixed process still open<br>Updated MCP |
