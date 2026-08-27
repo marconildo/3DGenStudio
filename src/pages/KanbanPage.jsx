@@ -9,6 +9,7 @@ import Footer from '../components/Footer'
 import Viewer from '../components/Viewer'
 import MeshPreviewDialog from '../components/MeshPreviewDialog'
 import SettingsModal from '../components/SettingsModal'
+import usePasteImageFiles from '../hooks/usePasteImageFiles'
 import { createMeshThumbnailFile } from '../utils/meshThumbnail'
 import './KanbanPage.css'
 import AssetSelectorModal from '../components/AssetSelectorModal';
@@ -273,11 +274,11 @@ export default function KanbanPage() {
     pendingResultFocusRef.current = payload
   }
 
-  const handleFileUpload = async (e) => {
-    const files = Array.from(e.target.files || [])
-    if (files.length === 0) return
+  // Upload every image onto `cardId`, creating a new card when none is targeted.
+  // Shared by the local file picker and the Ctrl-V paste import.
+  const importImageFilesToCard = async (files, { cardId = null, closeDraft = false } = {}) => {
+    if (files.length === 0) return null
 
-    const { cardId, closeDraft } = fileUploadContextRef.current
     const nextCardId = cardId || createImageCardId()
 
     try {
@@ -298,11 +299,26 @@ export default function KanbanPage() {
       if (closeDraft) {
         setImageDraft(null)
       }
+
+      return nextCardId
     } catch (err) {
       console.error('Upload failed:', err)
       showStatusMessage(err.message || 'Upload failed', 'error')
+      return null
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleFileUpload = async (e) => {
+    const files = Array.from(e.target.files || [])
+    if (files.length === 0) return
+
+    const { cardId, closeDraft } = fileUploadContextRef.current
+
+    try {
+      await importImageFilesToCard(files, { cardId, closeDraft })
+    } finally {
       e.target.value = ''
       fileUploadContextRef.current = { cardId: null, closeDraft: true }
     }
@@ -358,6 +374,44 @@ export default function KanbanPage() {
     const attributesData = await getProjectCardAttributes(projectId)
     setCardAttributes(attributesData)
   }
+
+  // Best-effort scroll + flash of the card an import landed on, matching what
+  // navigating here with a focus target does.
+  const focusImageCard = (cardId) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const element = document.getElementById(`image-card-${cardId}`)
+        if (!element) return
+
+        element.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' })
+        element.classList.add('image-card--focus-flash')
+        window.setTimeout(() => element.classList.remove('image-card--focus-flash'), 1800)
+      })
+    })
+  }
+
+  // Ctrl-V of a clipboard image. An open "Image Source" panel picks the target:
+  // its card when it was opened from one, otherwise a brand new card.
+  const handlePasteImageFiles = async (files) => {
+    const targetCardId = imageDraft?.cardId || null
+
+    const cardId = await importImageFilesToCard(files, {
+      cardId: targetCardId,
+      closeDraft: imageDraft?.mode === 'select'
+    })
+
+    if (!cardId) return
+
+    await refreshCardAttributes()
+    focusImageCard(cardId)
+    showStatusMessage(targetCardId
+      ? `Pasted ${files.length > 1 ? `${files.length} images` : 'image'} into the card`
+      : `Pasted ${files.length > 1 ? `${files.length} images` : 'image'} into a new card`)
+  }
+
+  usePasteImageFiles(handlePasteImageFiles, {
+    enabled: !showSettings && !assetSelectorOpen && !meshPreviewAsset
+  })
 
   // Reload board data when something outside this browser (e.g. an MCP
   // client / AI agent) mutates this project.

@@ -106,6 +106,7 @@ import GraphImageCompareNode from '../components/graph/GraphImageCompareNode'
 import GraphRigMeshNode from '../components/graph/GraphRigMeshNode'
 import GraphValueNode from '../components/graph/GraphValueNode'
 import { autoRig as runAutoRigService, ensureDesktopService, DEFAULT_AUTO_RIG_OPTIONS, pickAutoRigOptions } from '../utils/meshTools'
+import usePasteImageFiles from '../hooks/usePasteImageFiles'
 import { saveWorkflowDefaults } from '../utils/workflowDefaults'
 import {
   WORKFLOW_INPUT_NONE,
@@ -127,6 +128,11 @@ const flowNodeTypes = {
 const flowEdgeTypes = {
   deletable: GraphDeleteEdge
 }
+
+const isMeshFile = (file) => MESH_FILE_EXTENSIONS.includes((file.name.split('.').pop() || '').toLowerCase())
+
+// Half of a typical asset node, so a pasted node lands centred on the viewport.
+const PASTED_NODE_CENTER_OFFSET = { x: 180, y: 140 }
 
 export default function GraphPage({ project }) {
   const {
@@ -3109,19 +3115,9 @@ export default function GraphPage({ project }) {
     event.dataTransfer.dropEffect = 'copy'
   }, [])
 
-  // Import dropped image/mesh files into Assets and create the matching node
-  // (Image or Mesh) at the drop position for each file, then bind the uploaded
-  // asset to that node.
-  const handleCanvasFileDrop = useCallback(async (event) => {
-    const isMeshFile = (file) => MESH_FILE_EXTENSIONS.includes((file.name.split('.').pop() || '').toLowerCase())
-    const files = Array.from(event.dataTransfer?.files || []).filter(file => file.type.startsWith('image/') || isMeshFile(file))
-    if (files.length === 0) return
-    event.preventDefault()
-
-    const flowPosition = reactFlowInstance?.screenToFlowPosition
-      ? reactFlowInstance.screenToFlowPosition({ x: event.clientX, y: event.clientY })
-      : { x: 96, y: 96 }
-
+  // Import image/mesh files into Assets and create the matching node (Image or
+  // Mesh) for each one at `flowPosition`, then bind the uploaded asset to it.
+  const importFilesToCanvas = useCallback(async (files, flowPosition) => {
     for (let index = 0; index < files.length; index += 1) {
       const file = files[index]
       const isMesh = isMeshFile(file)
@@ -3163,10 +3159,45 @@ export default function GraphPage({ project }) {
         })
         if (updatedNode) replaceFlowNodeData(updatedNode)
       } catch (err) {
-        console.error(`Failed to import dropped ${isMesh ? 'mesh' : 'image'} to graph:`, err)
+        console.error(`Failed to import ${isMesh ? 'mesh' : 'image'} to graph:`, err)
       }
     }
-  }, [handleCreateNode, project.id, reactFlowInstance, replaceFlowNodeData, updateProjectNode, uploadAsset, uploadAssetThumbnail])
+  }, [handleCreateNode, project.id, replaceFlowNodeData, updateProjectNode, uploadAsset, uploadAssetThumbnail])
+
+  const handleCanvasFileDrop = useCallback(async (event) => {
+    const files = Array.from(event.dataTransfer?.files || []).filter(file => file.type.startsWith('image/') || isMeshFile(file))
+    if (files.length === 0) return
+    event.preventDefault()
+
+    const flowPosition = reactFlowInstance?.screenToFlowPosition
+      ? reactFlowInstance.screenToFlowPosition({ x: event.clientX, y: event.clientY })
+      : { x: 96, y: 96 }
+
+    await importFilesToCanvas(files, flowPosition)
+  }, [importFilesToCanvas, reactFlowInstance])
+
+  // Ctrl-V of a clipboard image creates an Image node holding the imported asset,
+  // centred on the visible part of the canvas.
+  const handlePasteImageFiles = useCallback(async (files) => {
+    const canvasBounds = graphCanvasRef.current?.getBoundingClientRect()
+
+    // The offset is applied after the conversion so the node stays centred at any zoom.
+    const canvasCenter = reactFlowInstance?.screenToFlowPosition && canvasBounds
+      ? reactFlowInstance.screenToFlowPosition({
+          x: canvasBounds.left + (canvasBounds.width / 2),
+          y: canvasBounds.top + (canvasBounds.height / 2)
+        })
+      : { x: 96 + PASTED_NODE_CENTER_OFFSET.x, y: 96 + PASTED_NODE_CENTER_OFFSET.y }
+
+    await importFilesToCanvas(files, {
+      x: canvasCenter.x - PASTED_NODE_CENTER_OFFSET.x,
+      y: canvasCenter.y - PASTED_NODE_CENTER_OFFSET.y
+    })
+  }, [importFilesToCanvas, reactFlowInstance])
+
+  usePasteImageFiles(handlePasteImageFiles, {
+    enabled: !showSettings && !assetSelectorOpen && !meshPreviewAsset
+  })
 
   const handleDeleteConnection = useCallback(async (edgeToDelete) => {
     if (!edgeToDelete) {

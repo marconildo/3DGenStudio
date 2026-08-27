@@ -37,7 +37,9 @@ const CHANGE_LOG_ENTRIES = [
 			'Animations: Added Horse animations from mesh2motion',
 			'Kanban: "Auto Rig" preselects the current displayed mesh',
 			'MCP: Improved input parameters validation (useful for small local llm)',
-			'SetupWizard: Added Trellis2 and Pixal3D ComfyUI Native'
+			'SetupWizard: Added Trellis2 and Pixal3D ComfyUI Native',
+			'Graph Page: Ctrl-V pastes a clipboard image as a new Image node',
+			'Kanban Board: Ctrl-V pastes a clipboard image into the open card, or a new card'
     ]
   },
   {
