@@ -1,7 +1,10 @@
 {
   "3": {
     "inputs": {
-      "seed": 1234,
+      "seed": [
+        "309",
+        0
+      ],
       "steps": 20,
       "cfg": 7.5,
       "sampler_name": "euler",
@@ -31,7 +34,10 @@
   },
   "12": {
     "inputs": {
-      "seed": 1234,
+      "seed": [
+        "309",
+        0
+      ],
       "steps": 12,
       "cfg": 1,
       "sampler_name": "euler",
@@ -70,7 +76,10 @@
   },
   "18": {
     "inputs": {
-      "seed": 1234,
+      "seed": [
+        "309",
+        0
+      ],
       "steps": 12,
       "cfg": 7.5,
       "sampler_name": "euler",
@@ -100,7 +109,10 @@
   },
   "23": {
     "inputs": {
-      "seed": 1234,
+      "seed": [
+        "309",
+        0
+      ],
       "steps": 12,
       "cfg": 7.5,
       "sampler_name": "euler",
@@ -205,7 +217,7 @@
   },
   "94": {
     "inputs": {
-      "target_resolution": "1536",
+      "target_resolution": 1536,
       "positive": [
         "91",
         0
@@ -628,6 +640,15 @@
     "class_type": "Trellis2Conditioning",
     "_meta": {
       "title": "Trellis2Conditioning"
+    }
+  },
+  "309": {
+    "inputs": {
+      "value": 1234
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Seed"
     }
   }
 }

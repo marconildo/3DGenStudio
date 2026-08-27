@@ -624,7 +624,11 @@
 						{ "Node": "186", "Input": "target_face_count",  "Name": "Target Face Number", "Type": "Number" },
 						{ "Node": "248", "Input": "switch",  "Name": "Remove Background", "Type": "Boolean" },
 						{ "Node": "288", "Input": "value",  "Name": "Texture Size", "Type": "Number" },
-						{ "Node": "94", "Input": "target_resolution",  "Name": "Upsample", "Type": "Number", "Enums":[1024,1536,2048] }
+						{ "Node": "309", "Input": "value",  "Name": "Seed", "Type": "Number" },
+						{ "Node": "94", "Input": "target_resolution",  "Name": "Upsample", "Type": "Number", "Enums":[1024,1536,2048] },
+						{ "Node": "241", "Input": "resolution",  "Name": "Dual Contouring Resolution", "Type": "Number", "Enums":[512,768,1024] },
+						{ "Node": "241", "Input": "sign_mode",  "Name": "Dual Contouring Sign Mode", "Type": "String", "Enums":["udf","sdf"] },
+						{ "Node": "241", "Input": "sign_mode.qef",  "Name": "Dual Contouring QEF", "Type": "Boolean" }
 					],
 					"Outputs": [
 						{ "Node": "272", "Name": "Save Mesh", "Type": "Mesh" }
@@ -654,7 +658,11 @@
 						{ "Node": "186", "Input": "target_face_count",  "Name": "Target Face Number", "Type": "Number" },
 						{ "Node": "248", "Input": "switch",  "Name": "Remove Background", "Type": "Boolean" },
 						{ "Node": "288", "Input": "value",  "Name": "Texture Size", "Type": "Number" },
-						{ "Node": "94", "Input": "target_resolution",  "Name": "Upsample", "Type": "Number", "Enums":[1024,1536,2048] }
+						{ "Node": "306", "Input": "value",  "Name": "Seed", "Type": "Number" },
+						{ "Node": "94", "Input": "target_resolution",  "Name": "Upsample", "Type": "Number", "Enums":[1024,1536,2048] },
+						{ "Node": "241", "Input": "resolution",  "Name": "Dual Contouring Resolution", "Type": "Number", "Enums":[512,768,1024] },
+						{ "Node": "241", "Input": "sign_mode",  "Name": "Dual Contouring Sign Mode", "Type": "String", "Enums":["udf","sdf"] },
+						{ "Node": "241", "Input": "sign_mode.qef",  "Name": "Dual Contouring QEF", "Type": "Boolean" }
 					],
 					"Outputs": [
 						{ "Node": "272", "Name": "Save Mesh", "Type": "Mesh" }
