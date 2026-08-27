@@ -6,7 +6,7 @@ import { Buffer } from 'buffer';
 import { randomUUID } from 'crypto';
 import { createAssetEditRecord, createBrushChildRecord, resolveProjectImageSource, resolveProjectMeshSource } from './storage.js';
 import fs from 'fs/promises';
-import { createWriteStream, existsSync } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import { spawn } from 'node:child_process';
 import process from 'node:process';
@@ -130,6 +130,39 @@ import {
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3001;
+
+// Where this backend ended up, for anything that has to FIND it rather than be
+// told: chiefly the MCP stdio bridge (mcp/stdio.js). The desktop shell moves the
+// backend off 3001 when something else holds it, so a hardcoded 3001 in a client
+// is a bug waiting to happen. Written on listen, removed on a clean exit.
+const RUNTIME_FILE = path.join(DATA_DIR, 'runtime.json');
+
+function publishRuntimeInfo(port) {
+  try {
+    mkdirSync(DATA_DIR, { recursive: true });
+    writeFileSync(RUNTIME_FILE, JSON.stringify({
+      port,
+      origin: `http://127.0.0.1:${port}`,
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+    }, null, 2));
+  } catch {
+    // A read-only data dir costs discovery, not the server.
+  }
+}
+
+// Only clear the file if it is still OURS — a second instance that started on
+// another port has since overwritten it, and stomping that would point clients
+// at a dead server.
+function unpublishRuntimeInfo() {
+  try {
+    const cur = JSON.parse(readFileSync(RUNTIME_FILE, 'utf8'));
+    if (cur?.pid === process.pid) rmSync(RUNTIME_FILE, { force: true });
+  } catch {
+    // absent, unreadable, or not ours — nothing to do
+  }
+}
+process.on('exit', unpublishRuntimeInfo);
 
 // Last-resort safety net: a single dropped stream or stray async error should
 // never take the whole server down (which forced a full restart before). Log
@@ -9346,7 +9379,8 @@ initializeStorage().then(async () => {
     console.warn('Failed to clear stale processing cards on startup:', err.message);
   }
 
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
+    publishRuntimeInfo(PORT);
     console.log(`🚀 3D Gen Studio Backend running at http://localhost:${PORT}`);
     console.log(`📁 Local Workspace: ${DATA_DIR}`);
     if (PUBLIC_BASE_URL) {
@@ -9359,5 +9393,22 @@ initializeStorage().then(async () => {
     } else {
       console.log('ℹ️  No dist/ build found — run "npm run build" to serve the UI from this server.');
     }
+  });
+
+  // A port collision is the one startup failure with an obvious fix, so say what
+  // it is. The desktop shell picks a free port before spawning this process, but
+  // that check and this bind are not atomic — and a bare `npm start` or a
+  // container with a clashing publish gets here with no shell to help.
+  server.on('error', (err) => {
+    if (err.code !== 'EADDRINUSE') throw err;
+    // The banner above may already have printed: binding the unspecified address
+    // can report `listening` for the IPv6 half and only then fail on the IPv4 one,
+    // so say plainly that the server is not up.
+    console.error(
+      `❌ Port ${PORT} is already in use — another 3D Gen Studio (or another program) has it.\n` +
+      `   The backend did NOT start.\n` +
+      `   Start it on a different port with:  PORT=${PORT + 1} npm start`
+    );
+    process.exit(1);
   });
 });

@@ -326,6 +326,10 @@ function ServiceControl({ name }) {
   const stopping = busy === 'stop'
   const starting = !stopping && (st.starting || busy === 'start')
   const running = st.running && !starting && !stopping
+  // Answering on its port, but started outside the app — the port was already in
+  // use by a working instance, so the shell adopted it rather than starting a
+  // second one. There is no child process to kill, so Stop would be a lie.
+  const external = running && st.external
 
   const applyResult = (r) => {
     if (r?.status?.[name]) setSt(r.status[name])
@@ -356,11 +360,13 @@ function ServiceControl({ name }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.6em' }}>
         <span style={{ width: 9, height: 9, borderRadius: '50%', background: dotColor, boxShadow: running ? '0 0 6px #4caf50' : 'none', flex: 'none' }} />
         <span className="settings-helper-text" style={{ margin: 0 }}>
-          {stopping ? 'Stopping…' : starting ? 'Starting…' : running ? 'Running' : 'Stopped'}
+          {stopping ? 'Stopping…' : starting ? 'Starting…'
+            : external ? 'Running (started outside 3D Gen Studio)'
+            : running ? 'Running' : 'Stopped'}
         </span>
         <div style={{ flex: 1 }} />
         {running ? (
-          <button type="button" style={btn} onClick={doStop} disabled={!!busy}>Stop</button>
+          <button type="button" style={btn} onClick={doStop} disabled={!!busy || external} title={external ? 'This service was not started by 3D Gen Studio, so it cannot be stopped from here.' : undefined}>Stop</button>
         ) : (
           <button type="button" style={btn} onClick={doStart} disabled={!!busy}>{starting ? 'Starting…' : 'Start'}</button>
         )}

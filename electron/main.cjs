@@ -44,8 +44,15 @@ const {
 // Force a stable, brandable name BEFORE any getPath('userData') call.
 app.setName('3DGenStudio');
 
-const BACKEND_PORT = Number(process.env.PORT) || 3001;
-const BACKEND_ORIGIN = `http://localhost:${BACKEND_PORT}`;
+// Every port below is a PREFERENCE, not a reservation: a user's own ComfyUI, a
+// container publishing the same number, or an orphan from a hard kill can already
+// hold it. Binding on top of one fails with EADDRINUSE after the process has
+// spawned, which surfaces as a mystery timeout — so each is probed and, if taken,
+// resolved before anything starts (see resolvePort / resolveBackendPort).
+// An explicit env override is the user's decision and is never remapped.
+let BACKEND_PORT = Number(process.env.PORT) || 3001;
+let BACKEND_ORIGIN = `http://localhost:${BACKEND_PORT}`;
+const BACKEND_PORT_PINNED = Boolean(process.env.PORT);
 const PYTHON_PORT = Number(process.env.MESHTOOLS_PORT) || 8200;
 const RIG_PORT = Number(process.env.RIGTOOLS_PORT) || 8300;
 const MOTION_PORT = Number(process.env.KIMODO_PORT) || 8400;
@@ -119,6 +126,10 @@ let shuttingDown = false;
 // ensure() calls. The registry is populated after the launchers are defined.
 const handles = { meshtools: null, rigging: null, motion: null, mocap: null, comfyui: null };
 const starting = { meshtools: null, rigging: null, motion: null, mocap: null, comfyui: null };
+// Services answering on their port that we did NOT spawn — an orphan of a hard
+// kill, or a copy the user runs themselves. They work, so the UI must not call
+// them "Stopped", but there is no handle to kill and quitting must not try.
+const adopted = new Set();
 let SERVICES = null;
 // Set while a managed-ComfyUI update or reinstall is rewriting the install tree.
 // Both jobs delete files a running ComfyUI would have open, so starting the
@@ -314,26 +325,227 @@ function patchSettings(patch, timeoutMs = 8000) {
   });
 }
 
-// Is a TCP port free to bind on loopback? Used to pick a ComfyUI port that does
-// not collide with a ComfyUI the user already runs themselves.
-function portFree(port) {
+// Can we bind this port on this address? Only EADDRINUSE/EACCES mean "taken" —
+// an IPv6 probe on a machine with IPv6 disabled fails for reasons that say
+// nothing about the port, and treating that as a conflict would remap every
+// service on every launch.
+function bindable(port, host) {
   return new Promise((resolve) => {
     const srv = net.createServer();
-    srv.once('error', () => resolve(false));
+    srv.once('error', (err) => resolve(err.code !== 'EADDRINUSE' && err.code !== 'EACCES'));
     srv.once('listening', () => srv.close(() => resolve(true)));
-    srv.listen(port, '127.0.0.1');
+    srv.listen(port, host);
   });
+}
+
+// Is a TCP port free? Every address is probed, not just loopback, because
+// "free" is per-address on Windows (libuv sets SO_REUSEADDR): a program holding
+// 0.0.0.0:8200 is INVISIBLE to a 127.0.0.1 probe, which happily succeeds — and
+// the service then dies on EADDRINUSE seconds later, looking like a startup
+// hang rather than a port clash. The app has services of both kinds: the Node
+// backend binds every interface, the Python services bind 127.0.0.1 only. So a
+// port only counts as free when nothing holds any of these.
+const PROBE_HOSTS = ['0.0.0.0', '127.0.0.1', '::', '::1'];
+
+async function portFree(port) {
+  for (const host of PROBE_HOSTS) {
+    if (!(await bindable(port, host))) return false;
+  }
+  return true;
 }
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Returns null when nothing in the window is free — callers must handle that
+// rather than binding a port this never vouched for.
 async function pickFreePort(start, tries = 20) {
   for (let p = start; p < start + tries; p += 1) {
     if (await portFree(p)) return p;
   }
-  return start;
+  return null;
+}
+
+// --- Port conflict resolution -------------------------------------------------
+// A taken port is resolved by asking three questions in order:
+//   1. Is it free?               -> use it
+//   2. Is it OUR service, alive? -> reuse it (an orphan of a hard kill, or a copy
+//                                  the user started by hand); a second instance
+//                                  would only fight it
+//   3. Someone else holds it     -> move to the next free port and PERSIST that
+//                                  choice, so the backend's proxy (server.js) and
+//                                  the Settings UI agree with what actually bound
+// ComfyUI leaves this sequence after step 1: a listener on 8188 is usually the
+// user's own ComfyUI, which they may well prefer over a second copy competing for
+// the same VRAM, so that one asks instead of deciding (resolveComfyPort).
+
+// Remaps made this launch, reported to the user once. Keyed by service so a
+// repeated probe can't double-report.
+const portRemaps = new Map();
+let portRemapTimer = null;
+
+// Write a service's real port back through the backend. Best-effort: an
+// unreachable backend costs consistency, not the start.
+async function persistPort(svc, port) {
+  if (!svc.settingsKey) return;
+  const ok = await patchSettings({ apis: { [svc.settingsKey]: { port: String(port) } } });
+  if (!ok) log(`${svc.label}: could not save port ${port} to settings — the backend may still proxy to the old one.`);
+}
+
+// The port `svc` should actually bind, or null when the caller should NOT start
+// it (something equivalent already answers there). Never mutates svc.port — the
+// caller assigns, so status and health checks read one source of truth.
+async function resolvePort(name, svc) {
+  const wanted = svc.port;
+  if (await portFree(wanted)) return wanted;
+
+  // ComfyUI goes first: unlike the others, a healthy instance on its port is not
+  // automatically the one to use — a user's own ComfyUI does not have the node
+  // packs the managed install provides, and adopting it silently turns a port
+  // clash into workflows failing with "node not found" much later.
+  if (name === 'comfyui') return resolveComfyPort(svc);
+
+  if (await isHealthy(wanted, svc.healthPath)) {
+    log(`${svc.label}: port ${wanted} already answers a health check — reusing that instance.`);
+    adopted.add(name);
+    return null;
+  }
+
+  const next = await pickFreePort(wanted + 1);
+  if (!next) {
+    log(`${svc.label}: port ${wanted} is taken and nothing in the 20 ports above it is free.`);
+    return wanted; // fail loudly on the bind rather than silently doing nothing
+  }
+  log(`${svc.label}: port ${wanted} is used by another program → moving to ${next}.`);
+  await persistPort(svc, next);
+  notePortRemap(name, svc.label, wanted, next);
+  return next;
+}
+
+// Does the ComfyUI answering on this port belong to us? /system_stats reports the
+// process argv, and ours always carries the managed install's own directories
+// (startComfyUI passes --models-directory & friends under COMFY_DATA). Older
+// ComfyUI builds omit argv — then the answer is "unknown", which is reported as
+// not-ours so the user gets the choice rather than a silent adoption.
+function isManagedComfy(port) {
+  return new Promise((resolve) => {
+    const req = http.get({ host: '127.0.0.1', port, path: '/system_stats', timeout: 2000 }, (res) => {
+      if (res.statusCode !== 200) { res.resume(); return resolve(false); }
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => {
+        try {
+          const argv = JSON.parse(body)?.system?.argv;
+          const line = Array.isArray(argv) ? argv.join(' ') : '';
+          resolve(Boolean(line) && (line.includes(COMFY_DATA) || line.includes(COMFY_DIR)));
+        } catch { resolve(false); }
+      });
+    });
+    req.on('error', () => resolve(false));
+    req.setTimeout(2000, () => { req.destroy(); resolve(false); });
+  });
+}
+
+// A busy ComfyUI port is ambiguous in a way the others are not, so it is the one
+// case that asks. Returns the port to start on, or null to use what is already
+// running; throws if the user cancels (ensureService surfaces that as the error).
+async function resolveComfyPort(svc) {
+  const wanted = svc.port;
+  const theirs = await isHealthy(wanted, '/system_stats');
+
+  // Our own managed install, left behind by a hard kill or started by hand?
+  // Then there is nothing to ask about — adopt it like any other service.
+  if (theirs && await isManagedComfy(wanted)) {
+    log(`ComfyUI: the managed install is already running on port ${wanted} — reusing it.`);
+    adopted.add('comfyui');
+    return null;
+  }
+
+  const next = await pickFreePort(wanted + 1);
+
+  const buttons = [];
+  if (theirs) buttons.push('Use the running ComfyUI');
+  if (next) buttons.push(`Start mine on port ${next}`);
+  buttons.push('Cancel');
+
+  const { response } = await dialog.showMessageBox({
+    type: 'question',
+    title: '3D Gen Studio — ComfyUI port in use',
+    message: theirs
+      ? `A ComfyUI is already running on port ${wanted}.`
+      : `Port ${wanted} is already used by another program.`,
+    detail: theirs
+      ? '3D Gen Studio can use that one instead of starting its own copy — two ComfyUI instances would compete for the same GPU memory.'
+        + (next ? `\n\nOr it can start its own managed ComfyUI on port ${next} and leave the running one alone.` : '')
+      : `The managed ComfyUI cannot start there.`
+        + (next ? ` It can use port ${next} instead.` : ' No free port was found nearby either.'),
+    buttons,
+    defaultId: 0,
+    cancelId: buttons.length - 1,
+    noLink: true,
+  });
+
+  const choice = buttons[response];
+  if (choice === 'Use the running ComfyUI') {
+    // Point the app at it as an EXTERNAL instance: `managed` is what makes the app
+    // treat ComfyUI as its own to launch, and this one is not ours. Settings →
+    // "Use the managed ComfyUI" is the way back.
+    await patchSettings({ apis: { comfyui: { managed: false, url: 'http://127.0.0.1', port: String(wanted) } } });
+    log(`Using the ComfyUI already running on port ${wanted} instead of the managed one.`);
+    return null;
+  }
+  if (choice === 'Cancel' || !next) {
+    throw new Error(`Port ${wanted} is in use, so ComfyUI was not started. Pick a different port in Settings → ComfyUI.`);
+  }
+  log(`ComfyUI: port ${wanted} is taken → starting the managed install on ${next}.`);
+  await persistPort(svc, next);
+  notePortRemap('comfyui', svc.label, wanted, next);
+  return next;
+}
+
+// Tell the user once, not per service. Debounced because several services can
+// remap within a second of each other at auto-start; and because the new numbers
+// are saved, this dialog does not come back on the next launch.
+function notePortRemap(name, label, from, to) {
+  portRemaps.set(name, { label, from, to });
+  if (portRemapTimer) clearTimeout(portRemapTimer);
+  portRemapTimer = setTimeout(() => {
+    portRemapTimer = null;
+    const lines = [...portRemaps.values()].map((r) => `  • ${r.label}: ${r.from} → ${r.to}`);
+    portRemaps.clear();
+    if (!lines.length || shuttingDown) return;
+    dialog.showMessageBox({
+      type: 'info',
+      title: '3D Gen Studio — ports changed',
+      message: lines.length === 1
+        ? 'A port 3D Gen Studio wanted was already in use, so it moved to a free one.'
+        : 'Some ports 3D Gen Studio wanted were already in use, so it moved to free ones.',
+      detail: `${lines.join('\n')}\n\nThis has been saved — you can change it in Settings.`,
+      buttons: ['OK'],
+      noLink: true,
+    }).catch(() => {});
+  }, 2500);
+  if (portRemapTimer.unref) portRemapTimer.unref();
+}
+
+// The backend's own port has to be settled BEFORE it spawns: nothing can ask it
+// where it lives afterwards. Nothing external depends on the number — the
+// production bundle uses same-origin URLs and the window loads BACKEND_ORIGIN —
+// so this one moves silently. server.js publishes wherever it landed to
+// data/runtime.json for the MCP bridge.
+async function resolveBackendPort() {
+  if (BACKEND_PORT_PINNED) return;
+  if (await portFree(BACKEND_PORT)) return;
+  const next = await pickFreePort(BACKEND_PORT + 1);
+  if (!next) {
+    log(`Backend port ${BACKEND_PORT} is in use and no nearby port is free — starting anyway.`);
+    return;
+  }
+  log(`Backend port ${BACKEND_PORT} is in use → using ${next}.`);
+  BACKEND_PORT = next;
+  BACKEND_ORIGIN = `http://localhost:${next}`;
 }
 
 // Start the services the user opted into auto-starting (Settings → Mesh Tools /
@@ -365,34 +577,57 @@ async function autoStartServices() {
 }
 
 // --- On-demand Python service management ------------------------------------
+
+// Read a service's configured port out of settings onto the registry entry, so
+// the health checks and status reporting elsewhere see the same number the
+// process is about to bind. Every service whose port the Settings UI exposes
+// needs this — without it a user's port change is honoured by the backend's
+// proxy (server.js) but ignored by the launcher, and the two talk past each
+// other. Returns the service's whole api settings block for callers that want
+// more out of it (model folders). Best-effort: an unreachable backend leaves
+// the default in place rather than blocking the start.
+async function resolveConfiguredPort(svc, fallback) {
+  const settings = await fetchSettings();
+  const api = settings?.apis?.[svc.settingsKey] || {};
+  const p = Number(api.port);
+  svc.port = Number.isFinite(p) && p > 0 ? p : fallback;
+  return api;
+}
+
 function serviceRegistry() {
   return {
     meshtools: {
       // reqsTag: a requirements.txt bump flips this service back to
       // "not installed" until setup re-runs (incrementally) and re-tags it.
       label: 'Mesh Tools', venv: PY_VENV, port: PYTHON_PORT, reqsTag: MESHTOOLS_REQS_TAG, logFile: 'python.log',
-      start: () => startPythonServer({
-        serviceDir: PYTHON_DIR, venvDir: PY_VENV, port: PYTHON_PORT,
-        logStream: openLogStream('python.log'), log,
-      }),
+      settingsKey: 'meshtools',
+      resolveLaunch: (svc) => resolveConfiguredPort(svc, PYTHON_PORT),
+      start(port) {
+        return startPythonServer({
+          serviceDir: PYTHON_DIR, venvDir: PY_VENV, port,
+          logStream: openLogStream('python.log'), log,
+        });
+      },
     },
     rigging: {
       label: 'Rigging', venv: RIG_VENV, port: RIG_PORT, logFile: 'rig.log',
-      start: () => startSkintokens({
-        serviceDir: SKINTOKENS_DIR, venvDir: RIG_VENV, dataDir: RIG_DATA, port: RIG_PORT,
-        logStream: openLogStream('rig.log'), log,
-      }),
+      settingsKey: 'rigtools',
+      resolveLaunch: (svc) => resolveConfiguredPort(svc, RIG_PORT),
+      start(port) {
+        return startSkintokens({
+          serviceDir: SKINTOKENS_DIR, venvDir: RIG_VENV, dataDir: RIG_DATA, port,
+          logStream: openLogStream('rig.log'), log,
+        });
+      },
     },
     motion: {
       label: 'Motion Generation', venv: MOTION_VENV, port: MOTION_PORT, logFile: 'kimodo.log',
+      settingsKey: 'motiontools',
       // Port and model folder both live in settings, so they are read at start
       // time — changing either in Settings takes effect on the next start rather
       // than on the next app launch.
       resolveLaunch: async (svc) => {
-        const settings = await fetchSettings();
-        const api = settings?.apis?.motiontools || {};
-        const p = Number(api.port);
-        svc.port = Number.isFinite(p) && p > 0 ? p : MOTION_PORT;
+        const api = await resolveConfiguredPort(svc, MOTION_PORT);
         svc.modelsDir = String(api.modelsPath || '').trim() || null;
       },
       start(port) {
@@ -405,14 +640,12 @@ function serviceRegistry() {
     },
     mocap: {
       label: 'Video to Motion', venv: MOCAP_VENV, port: MOCAP_PORT, logFile: 'mocap.log',
+      settingsKey: 'mocaptools',
       // Same as motion: port and model folder are read at start time, so a
       // change in Settings takes effect on the next start rather than the next
       // app launch.
       resolveLaunch: async (svc) => {
-        const settings = await fetchSettings();
-        const api = settings?.apis?.mocaptools || {};
-        const p = Number(api.port);
-        svc.port = Number.isFinite(p) && p > 0 ? p : MOCAP_PORT;
+        const api = await resolveConfiguredPort(svc, MOCAP_PORT);
         svc.modelsDir = String(api.modelsPath || '').trim() || null;
       },
       start(port) {
@@ -428,15 +661,12 @@ function serviceRegistry() {
       // only answers once the server is actually accepting API calls.
       label: 'ComfyUI', venv: COMFY_VENV, port: COMFY_PORT_DEFAULT, logFile: 'comfyui.log',
       healthPath: '/system_stats', reqsTag: COMFY_SETUP_TAG,
+      settingsKey: 'comfyui',
       // Venv AND code dir must both be present — see comfyReady().
       isInstalled: () => comfyReady(),
       // The port is chosen at install time (to dodge a user's own ComfyUI) and
       // stored in settings, so it must be read at start time, not at boot.
-      resolveLaunch: async (svc) => {
-        const settings = await fetchSettings();
-        const p = Number(settings?.apis?.comfyui?.port);
-        svc.port = Number.isFinite(p) && p > 0 ? p : COMFY_PORT_DEFAULT;
-      },
+      resolveLaunch: (svc) => resolveConfiguredPort(svc, COMFY_PORT_DEFAULT),
       start: (port) => startComfyUI({
         appRoot: APP_ROOT, installDir: COMFY_DIR, dataDir: COMFY_DATA, venvDir: COMFY_VENV,
         port, logStream: openLogStream('comfyui.log'), log,
@@ -476,6 +706,11 @@ function stopService(name) {
   const h = handles[name];
   handles[name] = null;
   starting[name] = null;
+  if (adopted.delete(name)) {
+    // Not our process to kill — killing someone else's ComfyUI because the user
+    // pressed Stop in OUR settings panel would be a nasty surprise.
+    log(`${name} is running outside 3D Gen Studio — leaving it alone.`);
+  }
   if (h && typeof h.stop === 'function') {
     log(`Stopping ${name} service`);
     try { h.stop(); } catch { /* ignore */ }
@@ -511,8 +746,18 @@ function ensureService(name) {
       if (await isHealthy(svc.port, svc.healthPath)) return;
       stopService(name); // crashed → restart
     }
-    log(`Starting ${name} service on demand (port ${svc.port})`);
-    const handle = svc.start(svc.port);
+
+    // Somebody else may hold the configured port. This is the last moment before
+    // the bind, and the only one that sees the truth — a port free at install or
+    // at boot can be taken by the time the user asks for the service. null means
+    // an equivalent instance already answers there, so there is nothing to start.
+    const port = await resolvePort(name, svc);
+    if (port === null) return;
+    adopted.delete(name); // this one is ours from here on
+    svc.port = port;
+
+    log(`Starting ${name} service on demand (port ${port})`);
+    const handle = svc.start(port);
     handles[name] = handle;
 
     // Race readiness against the process dying. Without this, a service that
@@ -552,21 +797,36 @@ function serviceInstalled(svc) {
   return svc.isInstalled ? svc.isInstalled() : isReady(svc.venv, svc.reqsTag);
 }
 
+// An adoption is inferred, not owned: nothing tells us when an externally-started
+// service dies, so without this the UI would report "Running" forever. Cheap in
+// the normal case — `adopted` is empty.
+async function pruneAdopted() {
+  for (const name of [...adopted]) {
+    const svc = SERVICES?.[name];
+    if (!svc || !(await isHealthy(svc.port, svc.healthPath))) {
+      adopted.delete(name);
+      log(`${svc?.label || name} is no longer answering on port ${svc?.port} — no longer reported as running.`);
+    }
+  }
+}
+
 function serviceStatus() {
   const out = {};
   for (const [name, svc] of Object.entries(SERVICES)) {
     out[name] = {
       label: svc.label,
       installed: serviceInstalled(svc),
-      running: !!handles[name],
+      running: !!handles[name] || adopted.has(name),
       starting: !!starting[name],
+      // Answering, but not spawned by us — Stop cannot touch it.
+      external: adopted.has(name),
     };
   }
   return out;
 }
 
 function registerServicesIpc() {
-  ipcMain.handle('services:status', () => serviceStatus());
+  ipcMain.handle('services:status', async () => { await pruneAdopted(); return serviceStatus(); });
   // Reveal the log directory in the OS file manager. The Logs panel reads the
   // files over the API; this is the escape hatch for attaching them to a bug
   // report — and the only way to reach the previous session's *.prev.log.
@@ -822,7 +1082,9 @@ async function doSetup(opts, send) {
 // install exists and so never re-writes these fields.
 // Returns { port } on success, null if the settings write failed.
 async function applyManagedComfySettings() {
-  const port = await pickFreePort(COMFY_PORT_DEFAULT);
+  // Nothing free nearby is not fatal here: the install still records the default,
+  // and the conflict is resolved again (with the user in the loop) at start time.
+  const port = (await pickFreePort(COMFY_PORT_DEFAULT)) || COMFY_PORT_DEFAULT;
   const ok = await patchSettings({
     apis: {
       comfyui: {
@@ -983,6 +1245,10 @@ async function boot() {
   SERVICES = serviceRegistry();
   registerSetupIpc();
   registerServicesIpc();
+  // Must happen before the spawn: once the backend is running, nothing can ask
+  // it to move. The Python services get the same treatment individually, at the
+  // moment they start (ensureService → resolvePort).
+  await resolveBackendPort();
   backendProc = startBackend();
 
   // First run OR a broken/absent Mesh Tools venv → guided setup window with

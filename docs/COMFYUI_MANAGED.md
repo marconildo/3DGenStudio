@@ -36,7 +36,19 @@ apis.comfyui.port       = first free port from 8188
 ```
 
 `managed` is what distinguishes it from a user-supplied ComfyUI. The port is
-picked at install time so it never collides with a ComfyUI the user already runs.
+picked at install time so it never collides with a ComfyUI the user already runs,
+and checked again at every start — a port free during the install can be taken
+later. If it is, the shell asks (`resolveComfyPort` in `electron/main.cjs`):
+
+* **a ComfyUI is answering there, and it is ours** (recognised via `argv` in its
+  `/system_stats` — an orphan of a hard kill) — adopted silently, no second copy;
+* **a ComfyUI is answering there, and it is not ours** — the user chooses between
+  using it (which clears `managed`, so Settings → "Use the managed ComfyUI" is the
+  way back) and starting ours on the next free port;
+* **something else holds the port** — the user confirms the move to a free port.
+
+Whatever is chosen is written back to `apis.comfyui.port`, so the backend's proxy
+and the Settings UI stay in step with what actually bound.
 
 Models are **not** installed here — the existing in-app Setup Wizard downloads
 them, and it reads `path`/`modelsPath`, so it targets this install automatically.

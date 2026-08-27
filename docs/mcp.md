@@ -43,7 +43,17 @@ Add a custom connector (Settings → Connectors) with URL `http://localhost:3001
 }
 ```
 
-The stdio bridge requires the app to be running; it talks to `http://127.0.0.1:3001` (override with the `GENSTUDIO_URL` env var).
+The stdio bridge requires the app to be running. It finds the backend in this order:
+
+1. `GENSTUDIO_URL` — an explicit override, e.g. a backend on another machine.
+2. `PORT` — loopback on that port.
+3. `<data dir>/runtime.json` — written by the backend on startup with the port it
+   actually bound. The desktop app moves the backend off 3001 when something else
+   holds it, so this is what makes the bridge follow it. Searched under
+   `GENSTUDIO_DATA_ROOT`, the current directory, and the app-data directory
+   (`%APPDATA%/3DGenStudio`, `~/Library/Application Support/3DGenStudio`,
+   `~/.config/3DGenStudio`).
+4. `http://127.0.0.1:3001` as a last resort.
 
 Alternatively, without a checkout: `npx mcp-remote http://localhost:3001/mcp` as the command.
 
