@@ -3,7 +3,8 @@
 ; Three independent overrides live here:
 ;   1. customRemoveFiles / customInit - directory-link (junction) safety.
 ;   2. customCheckAppRunning          - the "app is still running" check.
-;   3. customUnInstall                - "delete your data too?" on uninstall.
+;   3. customRemoveFiles / customUnInstall - "delete your data too?" on uninstall
+;      (both drive the same un.MaybeRemoveAppData; see it for why).
 ;
 ; WHY THE LINK PURGE EXISTS
 ; -------------------------
@@ -610,9 +611,28 @@ FunctionEnd
     ${EndIf}
   !macroend
 
-  ; Runs at the very end of Section un.install, after the app files and the
-  ; registry keys are gone - where the vendor deletes app data too.
-  !macro customUnInstall
+  ; Acts on the answer ASK_ABOUT_APP_DATA recorded in $appDataMode. Called from
+  ; the end of customRemoveFiles, i.e. once the app files are gone.
+  ;
+  ; WHY NOT FROM customUnInstall ALONE
+  ; ----------------------------------
+  ; It used to be, and that silently stopped working. Up to electron-builder 25.x
+  ; Section un.install inserted customRemoveFiles first and customUnInstall last,
+  ; so "ask, then delete" fell out of the vendor order for free. 26.x reversed it
+  ; (uninstaller.nsh now inserts customUnInstall BEFORE the delete block), which
+  ; put the action ahead of the question: $appDataMode was still unset when
+  ; customUnInstall ran, the ${If} below matched neither "1" nor "2", and the
+  ; answer the user had just given was written to a variable nobody read again.
+  ; The dialog appeared, "Yes" deleted nothing, and the data folder survived
+  ; intact - which is exactly what was reported.
+  ;
+  ; Nothing warns about this: both macros are optional hooks, so a reordering is
+  ; a silent behaviour change. Driving it from customRemoveFiles - the macro that
+  ; asks - keeps question and answer in one place and in the right order whatever
+  ; the vendor does with the insertion points. customUnInstall still calls it too,
+  ; so an order that puts that hook after the delete block keeps working; the
+  ; function is idempotent, so at most one of the two calls does anything.
+  Function un.MaybeRemoveAppData
     ${If} $appDataMode == "1"
     ${OrIf} $appDataMode == "2"
       ${If} $installMode == "all"
@@ -644,7 +664,16 @@ FunctionEnd
       ${If} $installMode == "all"
         SetShellVarContext all
       ${EndIf}
+
+      ; Answered and acted on - a second call must not repeat any of it.
+      StrCpy $appDataMode "0"
     ${EndIf}
+  FunctionEnd
+
+  ; Only fires when the vendor inserts this hook AFTER the delete block, in which
+  ; case customRemoveFiles has not made its own call yet. See the function.
+  !macro customUnInstall
+    Call un.MaybeRemoveAppData
   !macroend
 
   ; Appends one "which file was busy" line to the same log the installer's
@@ -664,8 +693,10 @@ FunctionEnd
 
   ; Replaces the vendor delete block in Section un.install.
   !macro customRemoveFiles
-    ; Ask about the per-user data folder now, while nothing has been deleted yet;
-    ; customUnInstall acts on the answer at the end of the section.
+    ; Ask about the per-user data folder now, while nothing has been deleted yet.
+    ; The answer is acted on by the un.MaybeRemoveAppData call at the end of this
+    ; macro - NOT from customUnInstall, which the vendor inserts BEFORE this block
+    ; and therefore ahead of the question.
     !insertmacro ASK_ABOUT_APP_DATA
 
     StrCpy $purgedLinkCount 0
@@ -729,6 +760,9 @@ FunctionEnd
 
       RMDir /r $INSTDIR
     ${EndIf}
+
+    ; The app files are gone; now honour the answer given at the top.
+    Call un.MaybeRemoveAppData
   !macroend
 
 !else
