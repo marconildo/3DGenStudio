@@ -393,6 +393,26 @@ FunctionEnd
   Var /GLOBAL appDataHeavyList  ; the heavy components found, formatted for the dialog
   Var /GLOBAL appDataSkipNames  ; "|name|name|" of top-level entries to leave alone
   Var /GLOBAL appDataFailed     ; how many entries could not be removed
+  Var /GLOBAL appDataPerMachine ; "1" when this is an all-users install
+
+  ; WHY $installMode IS COPIED INTO A VARIABLE OF OUR OWN
+  ; ----------------------------------------------------
+  ; $installMode is declared by the vendor's multiUser.nsh, and electron-builder
+  ; includes THIS file from computeCommonInstallerScriptHeader - i.e. the header
+  ; that is prepended to installer.nsi, ahead of its `!include "multiUser.nsh"`.
+  ; So at the point our file is read, $installMode does not exist yet.
+  ;
+  ; That is harmless inside a !macro: NSIS does not parse a macro body until it
+  ; is inserted, and both of ours are inserted inside Section un.install, long
+  ; after multiUser.nsh has run. A Function is different - its body is compiled
+  ; where it is written. Referencing $installMode from un.MaybeRemoveAppData
+  ; therefore produces
+  ;   warning 6000: unknown variable/constant "installMode" detected, ignoring
+  ; and electron-builder runs makensis with warnings-as-errors, so `dist:win`
+  ; dies at the uninstaller step.
+  ;
+  ; ASK_ABOUT_APP_DATA is a macro and can read $installMode safely, so it records
+  ; the answer here and the function reads this instead.
 
   ; Is "<name>" one of the "|a|b|c|" entries in $appDataSkipNames?
   ; Push "<name>" -> Pop "1" (skip it) or "0".
@@ -567,13 +587,20 @@ FunctionEnd
   !macro ASK_ABOUT_APP_DATA
     StrCpy $appDataMode "0"
 
+    ; Read $installMode here, where it is legal, and keep the answer for
+    ; un.MaybeRemoveAppData - see the note next to $appDataPerMachine.
+    StrCpy $appDataPerMachine "0"
+    ${If} $installMode == "all"
+      StrCpy $appDataPerMachine "1"
+    ${EndIf}
+
     ; Electron always writes to the CURRENT user's roaming folder, so resolve the
     ; path in that context even when an all-users install is being removed.
-    ${If} $installMode == "all"
+    ${If} $appDataPerMachine == "1"
       SetShellVarContext current
     ${EndIf}
     StrCpy $appDataDir "$APPDATA\${GENSTUDIO_DATA_DIRNAME}"
-    ${If} $installMode == "all"
+    ${If} $appDataPerMachine == "1"
       SetShellVarContext all
     ${EndIf}
 
@@ -635,7 +662,7 @@ FunctionEnd
   Function un.MaybeRemoveAppData
     ${If} $appDataMode == "1"
     ${OrIf} $appDataMode == "2"
-      ${If} $installMode == "all"
+      ${If} $appDataPerMachine == "1"
         SetShellVarContext current
       ${EndIf}
 
@@ -661,7 +688,7 @@ FunctionEnd
         ${EndIf}
       ${EndIf}
 
-      ${If} $installMode == "all"
+      ${If} $appDataPerMachine == "1"
         SetShellVarContext all
       ${EndIf}
 
