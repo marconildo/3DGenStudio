@@ -20,9 +20,13 @@ function bytesFromGB(gb) {
   return Number.isFinite(value) ? Math.round(value * (1024 ** 3)) : 0
 }
 
-// Model-pack keys that map 1:1 onto ComfyUIPaths categories. "DiffusionModels" is
-// handled separately because it is a map of quality → entry, not a flat list.
-const FILE_CATEGORIES = ['VAE', 'TextEncoder', 'LoRA', 'ControlNet', 'UpscaleModels', 'Checkpoints']
+// A model pack's file keys map 1:1 onto ComfyUIPaths categories, so the category
+// list is derived from the config: adding a ComfyUIPaths entry (ClipVision,
+// BackgroundRemoval, GeometryEstimation, …) needs no change here. "DiffusionModels"
+// is handled separately because it is a map of quality → entry, not a flat list.
+function fileCategories(comfyPathsByCategory) {
+  return Object.keys(comfyPathsByCategory || {}).filter(category => category !== 'DiffusionModels')
+}
 
 // Packs without quality variants (e.g. a checkpoint-only pack) are picked with a
 // checkbox instead of a dropdown; this sentinel is the "yes, install it" value.
@@ -36,7 +40,8 @@ function buildFileList(config, selections, comfyPathsByCategory) {
   const map = new Map()
 
   const addFile = (relativeDir, entry) => {
-    if (!entry?.FileName || !entry?.Url) return
+    // No ComfyUIPaths entry for the category → we have nowhere to put the file.
+    if (!relativeDir || !entry?.FileName || !entry?.Url) return
     const key = `${relativeDir}::${entry.FileName}`
     if (map.has(key)) return
     map.set(key, {
@@ -52,8 +57,10 @@ function buildFileList(config, selections, comfyPathsByCategory) {
     const pack = (config.Models || []).find(m => m.Name === selection.modelName)
     if (!pack) continue
     addFile(comfyPathsByCategory.DiffusionModels, pack.DiffusionModels?.[selection.modelQuality])
-    for (const category of FILE_CATEGORIES) {
+    for (const category of fileCategories(comfyPathsByCategory)) {
       const value = pack[category]
+      // Every category accepts either a single entry or an array of them (e.g. the
+      // 3D packs ship a shape VAE and a texture VAE).
       const entries = Array.isArray(value) ? value : (value ? [value] : [])
       for (const entry of entries) {
         addFile(comfyPathsByCategory[category], entry)
@@ -520,7 +527,7 @@ export default function SetupWizardModal({ onComplete, onClose }) {
         {stepId === 'models' && config && (
           <div className="setup-wizard__body">
             <p className="setup-wizard__hint">
-              Pick one quality per model you want to install — or leave everything as “Don’t install” to skip downloads and jump straight to importing workflows. Sizes include the model file and its required VAE / Text Encoder / LoRA(s).
+              Pick one quality per model you want to install — or leave everything as “Don’t install” to skip downloads and jump straight to importing workflows. Sizes include the model file and every extra it needs (VAE(s), text encoder, LoRAs, CLIP Vision, background removal, …).
             </p>
 
             <div className="setup-wizard__model-list">
