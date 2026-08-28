@@ -43,6 +43,29 @@ const LOCAL_ONLY_EXACT = new Set([
   '/api/export/mesh'    // writes files to a path on the local filesystem
 ]);
 
+// Routes that live under a shared-data prefix but must NOT be forwarded, because
+// they read or write the *user's own filesystem* while their data lives on the
+// shared server. The local handler answers them and pulls what it needs through
+// dataStore instead.
+//
+// Project export writes a .3dgp bundle into a folder the user picked with a
+// native folder picker, and import reads one back. Forwarded, the destination
+// path was interpreted on the container: "C:\Travaux" is not absolute on Linux,
+// so export failed with "The destination folder must be an absolute path" — and
+// had it been a POSIX-looking path it would have silently written inside the
+// container instead.
+//
+// These are prefixes, so /api/projects/import/files (the staged-ingest sibling
+// the local side posts to directly) is covered too.
+const LOCAL_EXECUTION_DATA_PREFIXES = [
+  '/api/projects/import'
+];
+
+// Same idea, but the path carries a project id: /api/projects/42/export.
+const LOCAL_EXECUTION_DATA_PATTERNS = [
+  /^\/api\/projects\/[^/]+\/export$/
+];
+
 // Everything the shared server owns. Forwarded verbatim by the gateway when a
 // remote is configured. /api/health is deliberately absent: a local install
 // answers for its own liveness, not the remote's.
@@ -98,11 +121,19 @@ export function isLocalOnlyPath(pathname) {
   return matchesPrefix(normalized, LOCAL_ONLY_PREFIXES);
 }
 
+export function isLocalExecutionDataPath(pathname) {
+  const normalized = normalize(pathname);
+  if (matchesPrefix(normalized, LOCAL_EXECUTION_DATA_PREFIXES)) return true;
+  return LOCAL_EXECUTION_DATA_PATTERNS.some(pattern => pattern.test(normalized));
+}
+
 export function isRemoteDataPath(pathname) {
   const normalized = normalize(pathname);
   // A local-only route always wins, so /api/motions/generate cannot be dragged
   // remote by the /api/motions/library prefix and /api/settings stays local.
   if (isLocalOnlyPath(normalized)) return false;
+  // Likewise a route that runs here but reads the shared data itself.
+  if (isLocalExecutionDataPath(normalized)) return false;
   return matchesPrefix(normalized, REMOTE_DATA_PREFIXES);
 }
 

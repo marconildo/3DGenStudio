@@ -11,11 +11,12 @@
 // key never leave the user's machine. serverMode.js owns the split.
 import express from 'express';
 import fsp from 'node:fs/promises';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, createWriteStream } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { Buffer } from 'node:buffer';
 import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { isRemoteDataPath } from './serverMode.js';
 
 const DATA_DIR = path.join(process.cwd(), 'data');
@@ -261,6 +262,35 @@ export async function readCachedAssetBytes(storedFilePath) {
   }
   const { bytes } = await downloadAssetToCache(relative);
   return bytes;
+}
+
+// Stream one asset from the shared server straight into `destinationPath`,
+// deliberately bypassing the disk cache.
+//
+// Used by project export, which copies every asset of a project into a folder
+// the user picked. Going through the cache would leave a second full copy of the
+// project on disk for a one-shot operation, and the export is a whole-library
+// sweep — exactly the access pattern a cache cannot help with.
+export async function downloadAssetToPath(storedFilePath, destinationPath) {
+  if (!remoteConfig?.url) {
+    throw new Error('No shared server is configured');
+  }
+  const relative = String(storedFilePath).replace(/^data\/assets\//, '');
+
+  const upstream = await fetch(new URL(`/assets/${encodeURI(relative)}`, remoteConfig.url), {
+    headers: {
+      authorization: `Bearer ${remoteConfig.token}`,
+      'x-genstudio-gateway': '1'
+    }
+  });
+  if (!upstream.ok || !upstream.body) {
+    const error = new Error(`The shared server returned ${upstream.status} for ${relative}`);
+    error.status = upstream.status;
+    throw error;
+  }
+
+  await fsp.mkdir(path.dirname(destinationPath), { recursive: true });
+  await pipeline(Readable.fromWeb(upstream.body), createWriteStream(destinationPath));
 }
 
 async function serveAsset(req, res) {

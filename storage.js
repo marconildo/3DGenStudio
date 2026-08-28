@@ -5229,10 +5229,14 @@ export async function buildProjectExport(projectId, { appVersion = '' } = {}) {
 
   const files = [];
   const seenDest = new Set();
-  const addFile = (source, dest) => {
-    if (!source || !dest || seenDest.has(dest)) return;
+  // `storagePath` is the DB-relative path ("data/assets/meshes/x.glb"); `source`
+  // is that resolved against this machine. A remote-connected install exports
+  // the plan produced here but fetches the bytes over HTTP, so it needs the
+  // former — an absolute path on the server's disk means nothing to it.
+  const addFile = (storagePath, dest) => {
+    if (!storagePath || !dest || seenDest.has(dest)) return;
     seenDest.add(dest);
-    files.push({ source, dest });
+    files.push({ source: toAbsoluteStoragePath(storagePath), storagePath, dest });
   };
 
   const assets = [];
@@ -5247,13 +5251,13 @@ export async function buildProjectExport(projectId, { appVersion = '' } = {}) {
     const subdir = assetSubdirForTypeName(row.typeName);
     const fileBase = path.basename(row.filePath);
     const relPath = `assets/${subdir}/${fileBase}`;
-    addFile(toAbsoluteStoragePath(row.filePath), relPath);
+    addFile(row.filePath, relPath);
 
     let thumbnailRelPath = null;
     if (row.thumbnail) {
       const thumbBase = path.basename(row.thumbnail);
       thumbnailRelPath = `assets/thumbnails/${thumbBase}`;
-      addFile(toAbsoluteStoragePath(row.thumbnail), thumbnailRelPath);
+      addFile(row.thumbnail, thumbnailRelPath);
     }
 
     // Paint document (base + layer textures live under paintdocs/<assetId>/).
@@ -5263,7 +5267,7 @@ export async function buildProjectExport(projectId, { appVersion = '' } = {}) {
       const paintRel = (storedPath) => {
         if (!storedPath) return null;
         const rel = `assets/paintdocs/${row.id}/${path.basename(storedPath)}`;
-        addFile(toAbsoluteStoragePath(storedPath), rel);
+        addFile(storedPath, rel);
         return rel;
       };
       paintDoc = {

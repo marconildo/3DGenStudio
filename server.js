@@ -21,7 +21,7 @@ import { moveGlbPivot, PIVOT_MODES } from './meshPivot.js';
 import { mountAuth, resolveJwtSecret, seedAdminFromEnv } from './auth.js';
 import { mountLocalOnlyGuard } from './serverMode.js';
 import { isGatewayActive, mountGateway } from './gateway.js';
-import { clearCardProcessing, createWorkflow, deleteWorkflowByFilePath, listWorkflows, getAssetRecord, getWorkflowDefinition, readAssetBytes, resolveProjectSource, replaceAssetFile, saveAssetEdit, saveAssetVersion, saveRootAsset, setCardProcessing } from './dataStore.js';
+import { buildProjectExportPlan, clearCardProcessing, copyAssetFileTo, createWorkflow, deleteWorkflowByFilePath, importProject, listWorkflows, getAssetRecord, getWorkflowDefinition, readAssetBytes, resolveProjectSource, replaceAssetFile, saveAssetEdit, saveAssetVersion, saveRootAsset, setCardProcessing } from './dataStore.js';
 
 // Node 20 (bundled by Electron 33) has no global WebSocket, so fall back to the
 // `ws` package. Newer Node runtimes (dev) expose a global WebSocket we can reuse.
@@ -5486,7 +5486,10 @@ function sanitizeProjectExportName(name, fallback = 'project') {
 
 async function readAppVersion() {
   try {
-    const raw = await fs.readFile(path.join(process.cwd(), 'version.json'), 'utf8');
+    // APP_DIR, not cwd: the desktop shell spawns this process with cwd set to the
+    // per-user data root, where version.json is absent — every exported bundle was
+    // recording an empty appVersion.
+    const raw = await fs.readFile(path.join(APP_DIR, 'version.json'), 'utf8');
     return JSON.parse(raw)?.version || '';
   } catch {
     return '';
@@ -5494,6 +5497,13 @@ async function readAppVersion() {
 }
 
 // Export a project as a self-contained .3dgp bundle folder under `folder`.
+//
+// This runs on the LOCAL install even when the project lives on a shared server:
+// `folder` is a path on the user's own machine, chosen with the native folder
+// picker. Forwarded to the container, "C:\Travaux" failed the isAbsolute check
+// (it is not absolute on Linux), and a POSIX-looking path would instead have
+// written the bundle inside the container. serverMode.js keeps this route off the
+// gateway's forward list; the data half comes through dataStore.
 app.post('/api/projects/:id/export', async (req, res) => {
   try {
     const projectId = Number(req.params.id);
@@ -5507,7 +5517,7 @@ app.post('/api/projects/:id/export', async (req, res) => {
       return res.status(400).json({ error: 'The destination folder must be an absolute path.' });
     }
 
-    const { manifest, files } = await buildProjectExport(projectId, { appVersion: await readAppVersion() });
+    const { manifest, files } = await buildProjectExportPlan(projectId, await readAppVersion());
     const bundleName = sanitizeProjectExportName(requestedName || manifest.project.name, 'project');
     const bundleDir = path.join(path.resolve(folder), bundleName);
 
@@ -5518,10 +5528,12 @@ app.post('/api/projects/:id/export', async (req, res) => {
       const destination = path.join(bundleDir, file.dest);
       await fs.mkdir(path.dirname(destination), { recursive: true });
       try {
-        await fs.copyFile(file.source, destination);
+        // By storagePath, not by absolute source: the bytes may be on the shared
+        // server, where a path from this machine means nothing.
+        await copyAssetFileTo(file.storagePath, destination);
         copied += 1;
       } catch (copyErr) {
-        console.warn(`Failed to copy export file ${file.source}:`, copyErr.message);
+        console.warn(`Failed to copy export file ${file.storagePath}:`, copyErr.message);
       }
     }
 
@@ -5542,11 +5554,150 @@ app.post('/api/projects/:id/export', async (req, res) => {
   }
 });
 
+// The manifest plus the list of files to copy, with no bytes written anywhere.
+// This is the half of an export that must happen where the data is: a
+// remote-connected install asks its shared server for the plan, then writes the
+// bundle to the user's own disk itself.
+app.get('/api/projects/:id/export-plan', async (req, res) => {
+  try {
+    const appVersion = typeof req.query.appVersion === 'string' ? req.query.appVersion : '';
+    const { manifest, files } = await buildProjectExport(Number(req.params.id), { appVersion });
+    // `source` is deliberately dropped: it is an absolute path on this machine,
+    // and the caller fetches the bytes over HTTP by storagePath instead.
+    res.json({ manifest, files: files.map(({ storagePath, dest }) => ({ storagePath, dest })) });
+  } catch (err) {
+    if (err.message === 'Project not found') {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+    console.error('Failed to build the project export plan:', err);
+    res.status(500).json({ error: err.message || 'Failed to build the project export plan' });
+  }
+});
+
+// --- project import --------------------------------------------------------
+
+// Where a bundle is staged before a shared server imports it.
+// importProjectExport inserts rows AND copies files in one transaction, so it has
+// to run where the database is — which means the bundle travels there first.
+//
+// Under data/incoming rather than ASSETS_DIR, so a half-staged bundle is never
+// reachable through the /assets static mount.
+const IMPORT_STAGING_ROOT = path.join(UPLOAD_STAGING_DIR, 'imports');
+
+// Resolve a bundle-relative path inside one staging directory, or null if it
+// would escape. The id is generated by the caller, so its shape is checked here
+// rather than trusted.
+function resolveImportStagingPath(stagingId, relativePath) {
+  const id = String(stagingId || '');
+  if (!/^[a-zA-Z0-9-]{8,64}$/.test(id)) return null;
+  const root = path.join(IMPORT_STAGING_ROOT, id);
+  const target = path.resolve(root, String(relativePath || '.'));
+  if (target !== root && !target.startsWith(root + path.sep)) return null;
+  return { root, target };
+}
+
+// stagingId and relPath are read from the QUERY STRING, not the body: multer's
+// destination/filename callbacks run while the multipart stream is still being
+// parsed, so a body field is not reliably populated yet. That race is exactly
+// what once filed uploaded assets under the wrong type.
+const importStagingUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const resolved = resolveImportStagingPath(req.query.stagingId, req.query.relPath);
+      if (!resolved) return cb(new Error('Invalid staging path'));
+      const directory = path.dirname(resolved.target);
+      fs.mkdir(directory, { recursive: true })
+        .then(() => cb(null, directory))
+        .catch(err => cb(err));
+    },
+    filename: (req, file, cb) => {
+      const resolved = resolveImportStagingPath(req.query.stagingId, req.query.relPath);
+      if (!resolved) return cb(new Error('Invalid staging path'));
+      cb(null, path.basename(resolved.target));
+    }
+  })
+});
+
+app.post('/api/projects/import/files', (req, res) => {
+  // Checked before multer runs, so a bad path never starts consuming the body.
+  // multer reports a rejection from its own callbacks as a route error, which
+  // Express turns into a 500 HTML page — wrong status, and it leaks a stack.
+  if (!resolveImportStagingPath(req.query.stagingId, req.query.relPath)) {
+    return res.status(400).json({ error: 'Invalid staging path.' });
+  }
+
+  importStagingUpload.single('file')(req, res, (err) => {
+    if (err) {
+      console.error('Failed to stage an import bundle file:', err);
+      return res.status(400).json({ error: err.message || 'Failed to stage the file' });
+    }
+    if (!req.file) {
+      return res.status(400).json({ error: 'A file part is required.' });
+    }
+    res.status(201).json({ relPath: String(req.query.relPath || ''), size: req.file.size });
+  });
+});
+
+// Read the single .3dgp out of a bundle folder. Shared by the local-folder path
+// and the staged-upload path so both reject the same malformed bundle with the
+// same message.
+async function readBundleManifest(bundleDir) {
+  const stats = await fs.stat(bundleDir).catch(() => null);
+  if (!stats || !stats.isDirectory()) {
+    throw Object.assign(new Error('The selected path is not a folder.'), { status: 400 });
+  }
+
+  const entries = await fs.readdir(bundleDir);
+  const manifestFiles = entries.filter(entry => entry.toLowerCase().endsWith('.3dgp'));
+  if (manifestFiles.length === 0) {
+    throw Object.assign(new Error('No .3dgp file was found in the selected folder.'), { status: 400 });
+  }
+  if (manifestFiles.length > 1) {
+    throw Object.assign(new Error('The selected folder contains more than one .3dgp file.'), { status: 400 });
+  }
+
+  const manifestRaw = await fs.readFile(path.join(bundleDir, manifestFiles[0]), 'utf8');
+  try {
+    return { manifest: JSON.parse(manifestRaw), manifestFilename: manifestFiles[0] };
+  } catch {
+    throw Object.assign(new Error('The .3dgp file is not valid JSON.'), { status: 400 });
+  }
+}
+
 // Import a project from a previously exported bundle folder (contains a .3dgp).
+//
+// Two request shapes, and only the first ever comes from a browser:
+//   { folder }    — a path on the machine running this install. Never forwarded
+//                   to a shared server (see serverMode.js), because the folder
+//                   exists on the user's disk, not the container's.
+//   { stagingId } — a bundle already uploaded to data/incoming/imports by a
+//                   remote-connected install. This is what makes importing a
+//                   local bundle land in the shared database.
 app.post('/api/projects/import', async (req, res) => {
+  const stagingId = typeof req.body?.stagingId === 'string' ? req.body.stagingId.trim() : '';
+  const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+
+  if (stagingId) {
+    const resolved = resolveImportStagingPath(stagingId, '.');
+    if (!resolved) {
+      return res.status(400).json({ error: 'Invalid staging id.' });
+    }
+    try {
+      const { manifest } = await readBundleManifest(resolved.root);
+      res.status(201).json(await importProjectExport(manifest, resolved.root, { name }));
+    } catch (err) {
+      console.error('Failed to import a staged project bundle:', err);
+      res.status(err.status || 500).json({ error: err.message || 'Failed to import project' });
+    } finally {
+      // Disposable either way: keeping it would leave a second full copy of the
+      // project on the server's disk forever.
+      await fs.rm(resolved.root, { recursive: true, force: true }).catch(() => {});
+    }
+    return;
+  }
+
   try {
     const folder = typeof req.body?.folder === 'string' ? req.body.folder.trim() : '';
-    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
 
     if (!folder) {
       return res.status(400).json({ error: 'A source folder is required.' });
@@ -5556,33 +5707,17 @@ app.post('/api/projects/import', async (req, res) => {
     }
 
     const bundleDir = path.resolve(folder);
-    const stats = await fs.stat(bundleDir).catch(() => null);
-    if (!stats || !stats.isDirectory()) {
-      return res.status(400).json({ error: 'The selected path is not a folder.' });
-    }
+    const { manifest, manifestFilename } = await readBundleManifest(bundleDir);
 
-    const entries = await fs.readdir(bundleDir);
-    const manifestFiles = entries.filter(entry => entry.toLowerCase().endsWith('.3dgp'));
-    if (manifestFiles.length === 0) {
-      return res.status(400).json({ error: 'No .3dgp file was found in the selected folder.' });
-    }
-    if (manifestFiles.length > 1) {
-      return res.status(400).json({ error: 'The selected folder contains more than one .3dgp file.' });
-    }
-
-    const manifestRaw = await fs.readFile(path.join(bundleDir, manifestFiles[0]), 'utf8');
-    let manifest;
-    try {
-      manifest = JSON.parse(manifestRaw);
-    } catch {
-      return res.status(400).json({ error: 'The .3dgp file is not valid JSON.' });
-    }
-
-    const project = await importProjectExport(manifest, bundleDir, { name });
-    res.status(201).json(project);
+    // Locally this is importProjectExport as before; against a shared server it
+    // uploads the bundle to a staging directory there and hands the import over.
+    res.status(201).json(await importProject(
+      { bundleDir, manifestFilename, name },
+      () => importProjectExport(manifest, bundleDir, { name })
+    ));
   } catch (err) {
     console.error('Failed to import project:', err);
-    res.status(500).json({ error: err.message || 'Failed to import project' });
+    res.status(err.status || 500).json({ error: err.message || 'Failed to import project' });
   }
 });
 
@@ -9579,6 +9714,16 @@ initializeStorage().then(async () => {
     await migrateWikiIfNeeded();
   } catch (err) {
     console.warn('Failed to prepare wiki documentation folder:', err.message);
+  }
+
+  // Staged import bundles are abandoned by definition at startup: nothing can be
+  // in flight in a process that has only just booted. An import that lost its
+  // connection halfway through would otherwise leave a full copy of the project
+  // on disk forever, since the route that cleans up never runs.
+  try {
+    await fs.rm(IMPORT_STAGING_ROOT, { recursive: true, force: true });
+  } catch (err) {
+    console.warn('Failed to clear staged import bundles on startup:', err.message);
   }
 
   // Skipped in server mode: from Phase 4 on, a card marked "processing" is

@@ -24,6 +24,7 @@ import {
   clearCardProcessingState,
   deleteLibraryAssetByFilePath,
   listWorkflowRecords,
+  buildProjectExport,
   findAssetByFilePath,
   getAssetRecordById,
   resolveProjectImageSource,
@@ -35,7 +36,7 @@ import {
   toStoredThumbnailPath,
   updateAssetThumbnail
 } from './storage.js';
-import { getRemoteTarget, readCachedAssetBytes } from './gateway.js';
+import { getRemoteTarget, readCachedAssetBytes, downloadAssetToPath } from './gateway.js';
 import { enqueueUpload, startUploadQueue } from './uploadQueue.js';
 
 // --- local helpers ---------------------------------------------------------
@@ -289,20 +290,24 @@ export async function clearCardProcessing(projectId, cardKey, options = {}) {
 // project does. Without these, a remote-connected install looks up ids in its
 // own empty database and reports "asset not found".
 
-async function getRemoteJson(remote, endpoint) {
+// undici reports every transport failure as a bare "fetch failed", which reaches
+// the user as a meaningless error on an otherwise ordinary action. Say what
+// actually went wrong and what still works.
+function unreachableError(remote, err, what) {
+  const cause = err?.cause?.code ? ` (${err.cause.code})` : '';
+  return new Error(
+    `The shared server at ${remote.url} is unreachable${cause}, ${what}. Local tools still work; try again once it is back.`
+  );
+}
+
+async function getRemoteJson(remote, endpoint, what = 'so this asset could not be looked up') {
   let response;
   try {
     response = await fetch(new URL(endpoint, remote.url), {
       headers: { authorization: `Bearer ${remote.token}`, 'x-genstudio-gateway': '1' }
     });
   } catch (err) {
-    // undici reports every transport failure as a bare "fetch failed", which
-    // surfaces to the user as a meaningless error on an otherwise ordinary
-    // action. Say what actually went wrong and what still works.
-    const cause = err?.cause?.code ? ` (${err.cause.code})` : '';
-    throw new Error(
-      `The shared server at ${remote.url} is unreachable${cause}, so this asset could not be looked up. Local tools still work; try again once it is back.`
-    );
+    throw unreachableError(remote, err, what);
   }
   if (response.status === 404) return null;
   if (!response.ok) {
@@ -410,6 +415,130 @@ export async function deleteWorkflowByFilePath(filePath) {
     throw new Error(`The shared server refused to delete the workflow (${response.status})`);
   }
   return { status: response.status === 404 ? 'not-found' : 'deleted' };
+}
+
+// --- project export / import ---------------------------------------------
+// Both directions touch the USER'S filesystem (a folder picked with the native
+// picker) while the project data lives wherever the project does. So the route
+// runs locally and the data half comes through here.
+
+// The manifest plus the list of files to copy. `files[].storagePath` is a
+// DB-relative path; the caller pairs it with copyAssetFileTo() rather than
+// touching a filesystem it may not own.
+export async function buildProjectExportPlan(projectId, appVersion = '') {
+  const remote = getRemoteTarget();
+  if (!remote) {
+    return await buildProjectExport(Number(projectId), { appVersion });
+  }
+  const plan = await getRemoteJson(
+    remote,
+    `/api/projects/${Number(projectId)}/export-plan?appVersion=${encodeURIComponent(appVersion || '')}`,
+    'so this project could not be exported'
+  );
+  if (!plan) throw new Error('Project not found');
+  return plan;
+}
+
+// Copy one stored asset file to an absolute path on this machine.
+export async function copyAssetFileTo(storedFilePath, destinationPath) {
+  const remote = getRemoteTarget();
+  if (!remote) {
+    await fs.copyFile(toAbsoluteStoragePath(storedFilePath), destinationPath);
+    return;
+  }
+  await downloadAssetToPath(storedFilePath, destinationPath);
+}
+
+// Every file under <bundleDir>/assets, as bundle-relative POSIX paths. The
+// remote import reads exactly these (manifest relPaths are all "assets/..."),
+// so walking the tree keeps this free of manifest-shape knowledge.
+async function listBundleAssetFiles(bundleDir) {
+  const out = [];
+  const walk = async (absolute, relative) => {
+    let entries;
+    try {
+      entries = await fs.readdir(absolute, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const childAbsolute = path.join(absolute, entry.name);
+      const childRelative = relative ? `${relative}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        await walk(childAbsolute, childRelative);
+      } else if (entry.isFile()) {
+        out.push(childRelative);
+      }
+    }
+  };
+  await walk(path.join(bundleDir, 'assets'), 'assets');
+  return out;
+}
+
+async function postBundleFile(remote, stagingId, bundleDir, relativePath) {
+  const url = new URL('/api/projects/import/files', remote.url);
+  url.searchParams.set('stagingId', stagingId);
+  url.searchParams.set('relPath', relativePath);
+
+  const form = new FormData();
+  form.append('file', asBlob(await fs.readFile(path.join(bundleDir, relativePath))), path.basename(relativePath));
+
+  let response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${remote.token}`, 'x-genstudio-gateway': '1' },
+      body: form
+    });
+  } catch (err) {
+    throw unreachableError(remote, err, 'so the bundle could not be uploaded');
+  }
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '');
+    throw new Error(`The shared server rejected ${relativePath} (${response.status}): ${detail.slice(0, 200)}`);
+  }
+}
+
+// Recreate a project from a bundle folder on this machine. `importLocal` is
+// injected for the same reason as in getWorkflowDefinition: the route owns the
+// manifest-reading and its 400-level error messages.
+//
+// Against a shared server the bundle has to travel: importProjectExport inserts
+// rows AND copies files, and it must run where the database is. So the files are
+// staged there first, then one call runs the whole import in its transaction.
+export async function importProject({ bundleDir, manifestFilename, name }, importLocal) {
+  const remote = getRemoteTarget();
+  if (!remote) return await importLocal();
+
+  const stagingId = randomUUID();
+  await postBundleFile(remote, stagingId, bundleDir, manifestFilename);
+  for (const relativePath of await listBundleAssetFiles(bundleDir)) {
+    await postBundleFile(remote, stagingId, bundleDir, relativePath);
+  }
+
+  let response;
+  try {
+    response = await fetch(new URL('/api/projects/import', remote.url), {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${remote.token}`,
+        'x-genstudio-gateway': '1',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({ stagingId, name: name || '' })
+    });
+  } catch (err) {
+    throw unreachableError(remote, err, 'so the import could not be completed');
+  }
+  const text = await response.text();
+  if (!response.ok) {
+    let detail = text;
+    try {
+      detail = JSON.parse(text).error || text;
+    } catch { /* not JSON — use the raw body */ }
+    throw new Error(`The shared server could not import the project (${response.status}): ${detail}`);
+  }
+  return JSON.parse(text);
 }
 
 // Read an input asset's bytes regardless of which side stores them. Compute
