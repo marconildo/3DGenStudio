@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useSettings } from '../context/SettingsContext.shared'
 import { API_BASE } from '../config'
+import ServerSettingsTab from './ServerSettingsTab'
 import './SettingsModal.css'
 
 const CUSTOM_API_TYPE_OPTIONS = [
@@ -701,6 +702,12 @@ export default function SettingsModal({ onClose }) {
               onClick={() => setActiveTab('meshtools')}
             >
               Mesh Tools
+            </button>
+            <button
+              className={`settings-tab ${activeTab === 'server' ? 'settings-tab--active' : ''}`}
+              onClick={() => setActiveTab('server')}
+            >
+              Server
             </button>
           </div>
 
@@ -1496,6 +1503,8 @@ export default function SettingsModal({ onClose }) {
               </div>
             </section>
           )}
+
+          {activeTab === 'server' && <ServerSettingsTab />}
         </div>
 
         <div className="settings-footer">

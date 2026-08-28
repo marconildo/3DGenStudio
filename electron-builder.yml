@@ -49,6 +49,17 @@ files:
   # root-level module server.js imports has to be listed here by name, or the
   # packaged backend dies at startup on ERR_MODULE_NOT_FOUND.
   - meshPivot.js
+  # Multi-user server mode. Same rule again: server.js imports all five
+  # statically, so omitting any one is an instant ERR_MODULE_NOT_FOUND at
+  # startup. auth.js (users/JWT), serverMode.js (which routes exist in which
+  # mode), gateway.js (forwards data routes to a shared server), dataStore.js
+  # (where a compute result gets written) and uploadQueue.js (its retry spool,
+  # reached via dataStore.js rather than imported by server.js directly).
+  - auth.js
+  - serverMode.js
+  - gateway.js
+  - dataStore.js
+  - uploadQueue.js
   # MCP automation server (POST /mcp on the backend + stdio bridge).
   - mcp/**/*
   - version.json

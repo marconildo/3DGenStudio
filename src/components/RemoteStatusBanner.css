@@ -1,0 +1,42 @@
+/* Shared-server status strip. Sits directly under the header, above page
+   content, and only renders when there is something to act on. */
+.remote-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 1.1rem;
+  font-family: var(--font-label);
+  font-size: 0.78rem;
+  letter-spacing: 0.02em;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.25);
+  /* The banner is informational; page content below must stay reachable. */
+  flex: 0 0 auto;
+}
+
+.remote-banner__icon {
+  font-size: 1.1rem;
+  flex: 0 0 auto;
+}
+
+.remote-banner__text {
+  /* Long server URLs must not push the strip wider than the viewport. */
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Colours are literal rather than themed: these three states must read as
+   error / caution / neutral even where the surface tokens are re-themed. */
+.remote-banner--error {
+  background: #58191b;
+  color: #ffdad6;
+}
+
+.remote-banner--warning {
+  background: #4d3a12;
+  color: #ffe0a3;
+}
+
+.remote-banner--info {
+  background: var(--surface-container-high);
+  color: var(--on-surface-variant);
+}

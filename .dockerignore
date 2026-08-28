@@ -1,0 +1,57 @@
+# Allowlist, not a blocklist. This repo carries ~37GB the server image must
+# never see (comfyui/ 12G, thirdparty/ 25G, release/ 1.2G), and — critically —
+# data/app.db holds live third-party API keys and access tokens in its Settings
+# row. A forgotten blocklist entry would bake those into a shared image, so the
+# default here is "exclude everything" and each addition is deliberate.
+*
+
+# --- needed to build the frontend bundle in the builder stage ---
+!package.json
+!package-lock.json
+!vite.config.js
+!index.html
+!src/
+!public/
+
+# --- the server itself ---
+!server.js
+!storage.js
+!wikiStorage.js
+!auth.js
+!serverMode.js
+!gateway.js
+!dataStore.js
+!uploadQueue.js
+!logs.js
+!meshPivot.js
+!version.json
+
+# mcp/ is imported statically by server.js, so it must resolve even though the
+# /mcp route is not mounted in server mode.
+!mcp/
+
+# File-based wiki (resolved against the module dir, not cwd).
+!wiki/
+
+# Re-exclude junk that the directory allowances above would otherwise pull back in.
+**/node_modules
+**/__pycache__
+**/*.log
+
+# Belt and braces. .dockerignore takes the LAST matching rule, so these sit
+# after every negation and cannot be re-included by accident.
+data/
+comfyui/
+thirdparty/
+python-server/
+electron/
+release/
+build/
+resources/
+tools/
+setup/
+dist/
+.git/
+.env
+.env.*
+.wiki-author

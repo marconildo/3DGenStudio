@@ -18,6 +18,10 @@ import tencentcloudSdk from 'tencentcloud-sdk-nodejs-intl-en';
 import { mountMcp } from './mcp/http.js';
 import { mountLogs } from './logs.js';
 import { moveGlbPivot, PIVOT_MODES } from './meshPivot.js';
+import { mountAuth, resolveJwtSecret, seedAdminFromEnv } from './auth.js';
+import { mountLocalOnlyGuard } from './serverMode.js';
+import { isGatewayActive, mountGateway } from './gateway.js';
+import { clearCardProcessing, createWorkflow, deleteWorkflowByFilePath, listWorkflows, getAssetRecord, getWorkflowDefinition, readAssetBytes, resolveProjectSource, replaceAssetFile, saveAssetEdit, saveAssetVersion, saveRootAsset, setCardProcessing } from './dataStore.js';
 
 // Node 20 (bundled by Electron 33) has no global WebSocket, so fall back to the
 // `ws` package. Newer Node runtimes (dev) expose a global WebSocket we can reuse.
@@ -259,6 +263,11 @@ function firstForwardedValue(req, header) {
 // forwarded headers we would emit https://example.com/assets/... for a proxy
 // listening on :4443, and every image would silently load from the wrong port.
 function getRequestBaseUrl(req) {
+  // A local install proxying for a browser asked for these URLs on its own
+  // behalf. Return them RELATIVE so the browser resolves them against the
+  // gateway it can actually reach — this server may be unroutable from the
+  // user's network, and the browser holds no token for it either.
+  if (req.get('x-genstudio-gateway') === '1') return '';
   if (PUBLIC_BASE_URL) return PUBLIC_BASE_URL;
 
   let protocol = req.protocol;
@@ -335,10 +344,48 @@ const HITEM_FAILURE_STATUSES = new Set(['failed', 'error', 'fail']);
 console.log('DEBUG: DATA_DIR is', DATA_DIR);
 console.log('DEBUG: DB_FILE is', path.join(DATA_DIR, 'app.db'));
 
+// Which half of the app this process is: 'local' runs everything (ComfyUI, the
+// Python sidecars, Settings), 'server' serves only the shared data routes for a
+// multi-user deployment. Read once here so every later guard agrees.
+const SERVER_MODE = process.env.GENSTUDIO_MODE === 'server' ? 'server' : 'local';
+const APP_DIR = path.dirname(fileURLToPath(import.meta.url));
+
 // Middleware
 app.use(cors());
+
+// Hide the local-machine routes when this process is the shared server.
+// Mounted first, ahead of the body parsers and the auth gate, so a local-only
+// path reads as absent whether or not the caller is authenticated.
+mountLocalOnlyGuard(app, { mode: SERVER_MODE });
+
+// Forward the shared-data routes to a remote server when one is configured,
+// and serve its asset bytes from a local disk cache. Position is critical: it
+// must run BEFORE express.json() and the multer routes below, so request
+// bodies are still unread and a large upload streams straight through, and
+// before the /assets static mount so cached remote assets win.
+mountGateway(app, { mode: SERVER_MODE });
 app.use('/api/meshes/editor/save', express.json({ limit: '50mb' }));
 app.use(express.json({ limit: '10mb' }));
+
+// Authentication gate (server mode only; a no-op in a desktop install).
+// Position is load-bearing: it must sit AFTER express.json() so the login
+// route can read its body, and BEFORE the /assets static mount so asset bytes
+// are gated too. The SPA shell in dist/ stays public so a browser can reach
+// the login form — see PROTECTED_PREFIXES in auth.js.
+// Misconfiguration must exit non-zero, not throw: the uncaughtException handler
+// above deliberately keeps this process alive through almost anything, which
+// would turn "no JWT secret" into a silent exit 0 that an orchestrator reads as
+// a clean shutdown instead of a failed deploy.
+let JWT_SECRET = null;
+if (SERVER_MODE === 'server') {
+  try {
+    JWT_SECRET = resolveJwtSecret();
+  } catch (err) {
+    console.error(`\n❌ Refusing to start in server mode: ${err.message}\n`);
+    process.exit(1);
+  }
+}
+mountAuth(app, { secret: JWT_SECRET, mode: SERVER_MODE });
 app.use('/assets', express.static(ASSETS_DIR));
 app.use('/wiki-media', express.static(WIKI_MEDIA_DIR));
 
@@ -357,6 +404,20 @@ const HAS_DIST = existsSync(DIST_DIR);
 if (HAS_DIST) {
   app.use(express.static(DIST_DIR));
 }
+
+
+// Liveness probe for the Docker healthcheck. Deliberately unauthenticated and
+// dependency-free: it must answer even when the database or a sidecar is down,
+// otherwise an orchestrator restarts a container that is merely degraded.
+// version.json is resolved against the module dir, not cwd — the desktop shell
+// spawns this process with cwd set to the per-user data root, where it is absent.
+app.get('/api/health', async (req, res) => {
+  let version = '';
+  try {
+    version = JSON.parse(await fs.readFile(path.join(APP_DIR, 'version.json'), 'utf8'))?.version || '';
+  } catch { /* not fatal — the probe only needs to answer */ }
+  res.json({ ok: true, mode: SERVER_MODE, version });
+});
 
 // App-level event stream (SSE). Lets an open browser UI learn about mutations
 // made outside of it (e.g. by an MCP client) and refetch instead of showing
@@ -393,7 +454,7 @@ app.get('/api/events', (req, res) => {
 // local LLMs) automate the app. Tools loop back through this server's own
 // REST API, so SQLite stays behind this single process. Gated by
 // settings.mcp (enabled/token) in mcp/http.js.
-mountMcp(app, {
+if (SERVER_MODE !== 'server') mountMcp(app, {
   baseUrl: `http://127.0.0.1:${PORT}`,
   getSettings,
   notifyMutation: (projectId, detail) => publishAppEvent({
@@ -406,14 +467,27 @@ mountMcp(app, {
 // Service logs (GET /api/logs, GET /api/logs/:id) — read-only tails of the log
 // files the desktop shell writes for itself, the backend, the two Python
 // services and the managed ComfyUI. Backs the Logs panel in the header.
-mountLogs(app);
+if (SERVER_MODE !== 'server') mountLogs(app);
 
 // Multer Config for Asset Uploads
+// Uploads land here first and are moved to their real asset directory by the
+// route handler, once the whole multipart body has been parsed.
+//
+// The destination CANNOT be derived from req.body.type as it once was: with
+// multipart, text fields only populate as the stream is parsed, so whenever the
+// file part arrives before the `type` field this callback saw `undefined` and
+// filed the bytes under the inferred type while the database row was written
+// with the real one. The record then pointed at a path with no file behind it
+// and the asset downloaded as 0 bytes.
+//
+// Deliberately outside ASSETS_DIR so in-flight uploads are never reachable
+// through the /assets static mount.
+const UPLOAD_STAGING_DIR = path.join(DATA_DIR, 'incoming');
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const destinationDir = getAssetDirectory(req.body.type || inferAssetTypeFromFilename(file.originalname));
-    fs.mkdir(destinationDir, { recursive: true })
-      .then(() => cb(null, destinationDir))
+    fs.mkdir(UPLOAD_STAGING_DIR, { recursive: true })
+      .then(() => cb(null, UPLOAD_STAGING_DIR))
       .catch(err => cb(err));
   },
   filename: (req, file, cb) => {
@@ -421,6 +495,17 @@ const storage = multer.diskStorage({
     cb(null, uniqueSuffix + path.extname(file.originalname));
   }
 });
+
+// Move a staged upload into the asset directory for its (now known) type.
+// Returns the final absolute path so callers can clean it up on failure.
+async function commitStagedUpload(file, assetType) {
+  const destinationDir = getAssetDirectory(assetType);
+  await fs.mkdir(destinationDir, { recursive: true });
+  const finalPath = path.join(destinationDir, file.filename);
+  await fs.rename(file.path, finalPath);
+  file.path = finalPath;
+  return finalPath;
+}
 
 app.delete('/api/assets/library/edits', async (req, res) => {
   try {
@@ -505,6 +590,22 @@ app.get('/api/library/comfy-workflows', async (req, res) => {
   } catch (err) {
     console.error('Failed to list ComfyUI workflows:', err);
     res.status(500).json({ error: 'Failed to list ComfyUI workflows' });
+  }
+});
+
+// One workflow, graph JSON included. Workflow DEFINITIONS are shared so that a
+// card's workflowId means the same thing to everyone, while EXECUTION stays on
+// each user's own ComfyUI — so a remote-connected install fetches the definition
+// from here at run time. Needed as a by-id route because the list above returns
+// every graph in the library, which is far too much to pull per run.
+app.get('/api/library/comfy-workflows/:id', async (req, res) => {
+  try {
+    const record = await getWorkflowRecordById(Number(req.params.id));
+    if (!record) return res.status(404).json({ error: 'ComfyUI workflow not found' });
+    res.json(await buildWorkflowResponse(record));
+  } catch (err) {
+    console.error('Failed to read the ComfyUI workflow:', err);
+    res.status(500).json({ error: err.message || 'Failed to read the ComfyUI workflow' });
   }
 });
 
@@ -952,7 +1053,7 @@ async function updateCardProcessingSnapshot(projectId, cardId, {
     return null;
   }
 
-  return await setCardProcessingState(Number(projectId), cardId, {
+  return await setCardProcessing(Number(projectId), cardId, {
     columnName,
     name,
     status,
@@ -1013,14 +1114,14 @@ async function resolveEditableMeshAsset({ assetId, filePath }) {
   const numericAssetId = Number(assetId)
 
   if (Number.isFinite(numericAssetId) && numericAssetId > 0) {
-    return await getAssetRecordById(numericAssetId);
+    return await getAssetRecord({ assetId: numericAssetId });
   }
 
   if (!filePath) {
     return null;
   }
 
-  return await findAssetByFilePath('mesh', filePath);
+  return await getAssetRecord({ type: 'mesh', filePath });
 }
 
 function inferComfyParameterType(value) {
@@ -2917,11 +3018,9 @@ async function downloadPreviewThumbnail(previewImageUrl, baseName = 'mesh') {
     const buffer = Buffer.from(await response.arrayBuffer());
     if (!buffer.length) return null;
 
-    const thumbnailFilename = createLibraryThumbnailFilename(baseName);
-    const absoluteThumbnailPath = toAbsoluteStoragePath(toStoredThumbnailPath(thumbnailFilename));
-    await fs.mkdir(path.dirname(absoluteThumbnailPath), { recursive: true });
-    await fs.writeFile(absoluteThumbnailPath, buffer);
-    return thumbnailFilename;
+    // Returns bytes rather than writing them: whether a thumbnail belongs on
+    // this disk or on a shared server is dataStore's decision, not ours.
+    return { filename: createLibraryThumbnailFilename(baseName), bytes: buffer };
   } catch (err) {
     console.warn('Failed to download provider preview thumbnail:', err.message);
     return null;
@@ -2993,11 +3092,8 @@ async function renderMeshThumbnailViaService(buffer, baseName = 'mesh') {
     const pngBuffer = data?.preview_b64 ? Buffer.from(data.preview_b64, 'base64') : null;
     if (!pngBuffer?.length) return null;
 
-    const thumbnailFilename = createLibraryThumbnailFilename(baseName);
-    const absoluteThumbnailPath = toAbsoluteStoragePath(toStoredThumbnailPath(thumbnailFilename));
-    await fs.mkdir(path.dirname(absoluteThumbnailPath), { recursive: true });
-    await fs.writeFile(absoluteThumbnailPath, pngBuffer);
-    return thumbnailFilename;
+    // Bytes, not a path — see downloadPreviewThumbnail above.
+    return { filename: createLibraryThumbnailFilename(baseName), bytes: pngBuffer };
   } catch (err) {
     console.warn('Failed to render mesh thumbnail via service:', err.message);
     return null;
@@ -3006,9 +3102,9 @@ async function renderMeshThumbnailViaService(buffer, baseName = 'mesh') {
 
 // Resolve a thumbnail for a generated mesh: prefer the provider's own cover
 // render (free, always available for the external APIs), else fall back to a
-// headless Blender render (covers ComfyUI meshes, which have no cover). Returns
-// the stored thumbnail filename, or null when neither is available.
-async function resolveMeshThumbnailFilename({ buffer, previewImageUrl, baseName = 'mesh' }) {
+// headless Blender render (covers ComfyUI meshes, which have no cover).
+// Returns { filename, bytes }, or null when neither is available.
+async function resolveMeshThumbnail({ buffer, previewImageUrl, baseName = 'mesh' }) {
   const cover = await downloadPreviewThumbnail(previewImageUrl, baseName);
   if (cover) return cover;
   return renderMeshThumbnailViaService(buffer, baseName);
@@ -3029,17 +3125,10 @@ async function saveGeneratedMeshAssets({
 
   for (const [index, downloadedFile] of downloadedFiles.entries()) {
     const extension = path.extname(downloadedFile.filename).replace('.', '') || getExtensionFromContentType(downloadedFile.contentType, 'glb');
-    const filename = `${Date.now()}-${Math.round(Math.random() * 1E9)}-${index}.${extension}`;
-    const storedFilePath = toStoredAssetPath('mesh', filename);
-    const absoluteFilePath = toAbsoluteStoragePath(storedFilePath);
-
-    await fs.mkdir(path.dirname(absoluteFilePath), { recursive: true });
-    await fs.writeFile(absoluteFilePath, downloadedFile.buffer);
 
     const assetPayload = {
       type: 'mesh',
       name: downloadedFiles.length > 1 ? `${name} ${index + 1}` : name,
-      filePath: storedFilePath,
       metadata: {
         format: extension.toUpperCase(),
         source: provider,
@@ -3056,17 +3145,27 @@ async function saveGeneratedMeshAssets({
     // Meshes have no client-side thumbnail on the headless generation path, so
     // use the provider's cover render, falling back to a headless Blender render
     // when there is no cover (best-effort).
-    const thumbnailFilename = await resolveMeshThumbnailFilename({
+    const thumbnail = await resolveMeshThumbnail({
       buffer: downloadedFile.buffer,
       previewImageUrl: downloadedFile.previewImageUrl,
       baseName: assetPayload.name
     });
 
+    // dataStore decides where these bytes land: this machine's own database, or
+    // the shared server when this install is connected to one.
+    const common = {
+      ...assetPayload,
+      bytes: downloadedFile.buffer,
+      extension,
+      thumbnailBytes: thumbnail?.bytes || null,
+      thumbnailFilename: thumbnail?.filename || null
+    };
+
     // When the mesh was edited from a connected mesh, save it as a version (child)
     // of that mesh instead of creating a new root asset.
     savedAssets.push(normalizedParentAssetId
-      ? await createAssetVersion({ assetId: normalizedParentAssetId, ...assetPayload, thumbnailPath: thumbnailFilename, inheritThumbnail: false, projectId: Number(projectId) })
-      : await createProjectAsset({ projectId: Number(projectId), ...assetPayload, thumbnailPath: thumbnailFilename }));
+      ? await saveAssetVersion({ ...common, parentAssetId: normalizedParentAssetId, projectId: Number(projectId) })
+      : await saveRootAsset({ ...common, projectId: Number(projectId) }));
   }
 
   return savedAssets;
@@ -3267,140 +3366,6 @@ function getComfyHistoryFiles(historyRecord, selectedOutputs = []) {
           expectedType,
           ...normalizedFile
         });
-
-app.post('/api/meshes/texture', async (req, res) => {
-  let processingProjectId = null;
-  let processingCardId = null;
-  let processingCardName = null;
-  let processingStartedAt = Date.now();
-
-  try {
-    const { projectId, selectedApi, prompt, name, meshSource, cardId } = req.body;
-    const trimmedName = String(name || '').trim();
-    const trimmedPrompt = String(prompt || '').trim();
-
-    if (!projectId || !selectedApi || !trimmedPrompt || !trimmedName) {
-      return res.status(400).json({ error: 'projectId, selectedApi, prompt and name are required' });
-    }
-
-    if (!String(selectedApi).startsWith('custom_')) {
-      return res.status(400).json({ error: 'Mesh texturing currently supports custom APIs only' });
-    }
-
-    const resolvedSource = await resolveProjectMeshSource(Number(projectId), meshSource);
-    const sourceAsset = resolvedSource?.asset;
-    if (!resolvedSource || !sourceAsset || sourceAsset.type !== 'mesh') {
-      return res.status(404).json({ error: 'Source mesh not found' });
-    }
-
-    processingProjectId = Number(projectId);
-    processingCardId = cardId || sourceAsset.metadata?.cardId || randomUUID();
-    processingCardName = trimmedName;
-    processingStartedAt = Date.now();
-
-    await updateCardProcessingSnapshot(processingProjectId, processingCardId, {
-      columnName: 'Texturing',
-      name: processingCardName,
-      status: 'processing',
-      progressPercent: null,
-      detail: 'Submitting mesh texturing request',
-      currentNodeLabel: 'Waiting for API response',
-      source: 'API',
-      operationType: 'mesh-texturing',
-      startedAt: processingStartedAt
-    });
-
-    const settings = await getSettings();
-    const customApi = getCustomApiConfig(settings, selectedApi, 'mesh-texturing');
-    const sourceFilePath = toAbsoluteStoragePath(resolvedSource.inputFilePath);
-    const sourceBuffer = await fs.readFile(sourceFilePath);
-    const meshMimeType = getMimeTypeFromFilename(resolvedSource.inputFilePath || resolvedSource.inputFilename || resolvedSource.inputName);
-    const replacements = {
-      prompt: trimmedPrompt,
-      name: trimmedName,
-      projectId: String(projectId),
-      cardId: String(processingCardId || ''),
-      meshBase64: sourceBuffer.toString('base64'),
-      meshMimeType,
-      meshFilename: path.basename(resolvedSource.inputFilePath || resolvedSource.inputFilename || resolvedSource.inputName || 'mesh.glb')
-    };
-    const requestHeaders = {
-      'Content-Type': 'application/json',
-      ...replaceTemplatePlaceholders(parseJsonTemplate(customApi.headers, 'Custom API headers', {}), replacements)
-    };
-    const requestPayload = replaceTemplatePlaceholders(parseJsonTemplate(customApi.body, 'Custom API body template', {}), replacements);
-
-    const response = await fetch(customApi.url, {
-      method: 'POST',
-      headers: requestHeaders,
-      body: JSON.stringify(requestPayload)
-    });
-
-    let responseBody = null;
-    const responseContentType = response.headers.get('content-type') || '';
-    if (String(responseContentType).toLowerCase().includes('application/json')) {
-      responseBody = await response.json().catch(() => ({}));
-    }
-
-    if (!response.ok) {
-      return res.status(response.status).json({
-        error: responseBody?.error?.message || responseBody?.error || 'Mesh texturing request failed'
-      });
-    }
-
-    const meshOutput = await extractMeshOutputFromApiResponse(response, responseBody);
-    const extension = path.extname(meshOutput.filename).replace('.', '') || getExtensionFromContentType(meshOutput.contentType, 'glb');
-    const filename = `${Date.now()}-${Math.round(Math.random() * 1E9)}.${extension}`;
-    const storedFilePath = toStoredAssetPath('mesh', filename);
-    const absoluteFilePath = toAbsoluteStoragePath(storedFilePath);
-
-    await fs.mkdir(path.dirname(absoluteFilePath), { recursive: true });
-    await fs.writeFile(absoluteFilePath, meshOutput.buffer);
-
-    // The result was produced from an existing source mesh, so save it as a
-    // version (child) of that mesh instead of creating a new root asset.
-    const savedAsset = await createAssetVersion({
-      assetId: sourceAsset.id,
-      type: 'mesh',
-      name: trimmedName,
-      filePath: storedFilePath,
-      metadata: {
-        format: extension.toUpperCase(),
-        source: 'API',
-        provider: customApi.name,
-        prompt: trimmedPrompt,
-        cardId: processingCardId
-      },
-      createdAt: Date.now(),
-      // The generated geometry differs from the parent, so render its own thumbnail.
-      inheritThumbnail: false
-    });
-
-    await clearCardProcessingState(processingProjectId, processingCardId, {
-      name: processingCardName
-    });
-
-    res.status(201).json(savedAsset);
-  } catch (err) {
-    console.error('Mesh texturing API execution failed:', err);
-    if (processingProjectId && processingCardId) {
-      await updateCardProcessingSnapshot(processingProjectId, processingCardId, {
-        columnName: 'Texturing',
-        name: processingCardName,
-        status: 'error',
-        progressPercent: null,
-        detail: err.message || 'Failed to run mesh texturing API',
-        currentNodeLabel: 'Mesh texturing failed',
-        source: 'API',
-        operationType: 'mesh-texturing',
-        startedAt: processingStartedAt
-      }).catch(persistErr => {
-        console.warn('Failed to persist mesh texturing error state:', persistErr.message);
-      });
-    }
-    res.status(500).json({ error: err.message || 'Failed to run mesh texturing API' });
-  }
-});
       }
     }
   }
@@ -3717,22 +3682,21 @@ async function saveImageEdits({ sourceAsset, editId, name = '', imageOutputs = [
 
   for (const [index, imageOutput] of imageOutputs.entries()) {
     const extension = imageOutput.extension || getExtensionFromMimeType(imageOutput.mimeType);
-    const storedFilePath = getImageEditStoredFilePath(sourceAsset, editId, extension);
-    const absoluteFilePath = toAbsoluteStoragePath(storedFilePath);
     const createdAt = Date.now() + index;
     const { width, height } = getImageDimensionsFromBuffer(imageOutput.buffer, {
       filename: `image.${extension}`,
       mimeType: imageOutput.mimeType
     });
 
-    await fs.mkdir(path.dirname(absoluteFilePath), { recursive: true });
-    await fs.writeFile(absoluteFilePath, imageOutput.buffer);
-
-    savedEdits.push(await createAssetEditRecord({
-      assetId: sourceAsset.id,
+    savedEdits.push(await saveAssetEdit({
+      parentAssetId: sourceAsset.id,
       editId,
       name,
-      filePath: storedFilePath,
+      bytes: imageOutput.buffer,
+      extension,
+      // Keep the images/<source>/<editId>/ layout: edits are deleted and renamed
+      // by file path, so a flat name here would orphan those operations.
+      relativePath: toAssetUrlPath(getImageEditStoredFilePath(sourceAsset, editId, extension)),
       width,
       height,
       createdAt
@@ -3745,6 +3709,14 @@ async function saveImageEdits({ sourceAsset, editId, name = '', imageOutputs = [
 async function loadWorkflowJson(filePath) {
   const workflowContent = await fs.readFile(toAbsoluteStoragePath(filePath), 'utf-8');
   return JSON.parse(workflowContent);
+}
+
+// Load and build a workflow definition from THIS install's database. Passed to
+// dataStore.getWorkflowDefinition as the local branch (it cannot import
+// parseComfyWorkflow / loadWorkflowJson from here without a cycle).
+async function buildLocalWorkflowResponse(workflowId) {
+  const record = await getWorkflowRecordById(Number(workflowId));
+  return record ? await buildWorkflowResponse(record) : null;
 }
 
 async function buildWorkflowResponse(record) {
@@ -3844,8 +3816,8 @@ app.post('/api/comfyui/workflows/run', workflowExecutionUpload.any(), async (req
       return res.status(400).json({ error: 'projectId is required when persisting workflow results' });
     }
 
-    const workflowRecord = await getWorkflowRecordById(Number(workflowId));
-    const workflow = workflowRecord ? await buildWorkflowResponse(workflowRecord) : null;
+    // The definition may live on the shared server; the run itself never does.
+    const workflow = await getWorkflowDefinition(workflowId, buildLocalWorkflowResponse);
 
     if (!workflow) {
       return res.status(404).json({ error: 'ComfyUI workflow not found in library' });
@@ -3894,8 +3866,8 @@ app.post('/api/comfyui/workflows/run', workflowExecutionUpload.any(), async (req
           ? (fileMarker.source || fileMarker.filePath || fileMarker.assetId)
           : fileMarker;
         const resolvedSource = parameterValueType === 'mesh'
-            ? await resolveProjectMeshSource(normalizedProjectId, sourceReference)
-            : await resolveProjectImageSource(normalizedProjectId, sourceReference);
+            ? await resolveProjectSource(normalizedProjectId, 'mesh', sourceReference)
+            : await resolveProjectSource(normalizedProjectId, 'image', sourceReference);
 
         if (!resolvedSource?.asset || resolvedSource.asset.type !== parameterValueType) {
           throw new Error(`A reference file is required for ${parameter.name}`);
@@ -3905,7 +3877,7 @@ app.post('/api/comfyui/workflows/run', workflowExecutionUpload.any(), async (req
           resolvedInputAssetsByType[parameterValueType].push(resolvedSource.asset.id);
         }
 
-        const inputBuffer = await fs.readFile(toAbsoluteStoragePath(resolvedSource.inputFilePath));
+        const inputBuffer = await readAssetBytes(resolvedSource.inputFilePath);
         resolvedInputs[parameter.id] = await uploadComfyInputFile(baseUrl, {
           buffer: inputBuffer,
           mimetype: getMimeTypeFromFilename(resolvedSource.inputFilePath || resolvedSource.inputFilename || resolvedSource.inputName),
@@ -4016,8 +3988,13 @@ app.post('/api/comfyui/workflows/run', workflowExecutionUpload.any(), async (req
     // parentAssetId wins when its type matches the output; otherwise, when
     // autoParentFromInputs is set, the output is saved under a resolved input asset
     // of the same type (the source it was derived from). No match → new root asset.
+    // Through dataStore: the parent asset's record lives wherever the project
+    // does. Reading it from the local database left this empty when connected to
+    // a shared server, so the type never matched the output, the explicit parent
+    // was silently ignored, and every generated mesh landed as a new root asset
+    // instead of a version of its source.
     const explicitParentType = normalizedParentAssetId
-      ? String((await getAssetRecordById(normalizedParentAssetId))?.assetTypeName || '').toLowerCase()
+      ? String((await getAssetRecord({ assetId: normalizedParentAssetId }))?.assetTypeName || '').toLowerCase()
       : null;
     const resolveOutputParentId = (outputType) => {
       if (normalizedParentAssetId && explicitParentType === outputType) {
@@ -4065,16 +4042,12 @@ app.post('/api/comfyui/workflows/run', workflowExecutionUpload.any(), async (req
             mimeType: downloadedFile.contentType
           })
         : { width: 0, height: 0 };
-      const filename = `${Date.now()}-${Math.round(Math.random() * 1E9)}.${extension}`;
-      const storedFilePath = toStoredAssetPath(inferredAssetType, filename);
-
       const generatedAssetPayload = {
         projectId: normalizedProjectId,
         type: inferredAssetType,
         name: (trimmedName || inferredAssetType === 'mesh')
           ? processingCardName
           : createGeneratedImageName(workflow.name, extension), // honor the user-provided Result name; fall back to a generated name only when none was given
-        filePath: storedFilePath,
         width: dimensions.width,
         height: dimensions.height,
         metadata: {
@@ -4094,41 +4067,46 @@ app.post('/api/comfyui/workflows/run', workflowExecutionUpload.any(), async (req
       };
 
       if (persistGeneratedAssets) {
-        const absoluteFilePath = toAbsoluteStoragePath(storedFilePath);
-
-        await fs.mkdir(path.dirname(absoluteFilePath), { recursive: true });
-        await fs.writeFile(absoluteFilePath, downloadedFile.buffer);
-
         // ComfyUI returns no cover image, so headless mesh outputs have no
         // thumbnail — render one via the mesh-tools service (best-effort).
-        const meshThumbnailFilename = inferredAssetType === 'mesh'
+        const meshThumbnail = inferredAssetType === 'mesh'
           ? await renderMeshThumbnailViaService(downloadedFile.buffer, generatedAssetPayload.name)
           : null;
+
+        // dataStore writes to this machine's database, or to the shared server
+        // when this install is connected to one. The bytes never touch disk here.
+        const ingest = {
+          ...generatedAssetPayload,
+          bytes: downloadedFile.buffer,
+          extension,
+          thumbnailBytes: meshThumbnail?.bytes || null,
+          thumbnailFilename: meshThumbnail?.filename || null
+        };
 
         // Store the output under the source it was derived from when one applies: a
         // mesh output becomes a version of the source mesh, an image output an edit
         // of the source image. Otherwise it's a new root asset.
         const outputParentId = resolveOutputParentId(inferredAssetType);
         const persistedAsset = (outputParentId && inferredAssetType === 'mesh')
-          ? await createAssetVersion({ assetId: outputParentId, ...generatedAssetPayload, thumbnailPath: meshThumbnailFilename, inheritThumbnail: false, projectId: hasProjectId ? normalizedProjectId : null })
+          ? await saveAssetVersion({ ...ingest, parentAssetId: outputParentId, projectId: hasProjectId ? normalizedProjectId : null })
           : (outputParentId && inferredAssetType === 'image')
             ? {
-                ...(await createAssetEditRecord({
-                  assetId: outputParentId,
+                ...(await saveAssetEdit({
+                  ...ingest,
+                  parentAssetId: outputParentId,
                   editId: workflowEditId,
-                  name: generatedAssetPayload.name,
-                  filePath: storedFilePath,
-                  width: dimensions.width,
-                  height: dimensions.height,
-                  projectId: hasProjectId ? normalizedProjectId : null,
-                  createdAt: generatedAssetPayload.createdAt
+                  projectId: hasProjectId ? normalizedProjectId : null
                 })),
                 type: 'image'
               }
-            : await createProjectAsset({ ...generatedAssetPayload, thumbnailPath: meshThumbnailFilename, detached: persistAssetsDetached });
+            : await saveRootAsset({ ...ingest, detached: persistAssetsDetached });
+
+        // Built from what was actually stored: the destination picks the final
+        // filename, so it can no longer be predicted before the write.
+        const storedPath = persistedAsset?.filePath || persistedAsset?.filename || '';
         generatedAssets.push({
           ...persistedAsset,
-          url: `${getRequestBaseUrl(req)}/assets/${encodeURI(toAssetUrlPath(storedFilePath))}`,
+          url: `${getRequestBaseUrl(req)}/assets/${encodeURI(toAssetUrlPath(storedPath))}`,
           outputKey: workflowFile.outputKey,
           outputNodeId: workflowFile.nodeId,
           expectedType: workflowFile.expectedType,
@@ -4155,7 +4133,7 @@ app.post('/api/comfyui/workflows/run', workflowExecutionUpload.any(), async (req
     }
 
         if (persistProcessingCard) {
-          await clearCardProcessingState(processingProjectId, processingCardId, {
+          await clearCardProcessing(processingProjectId, processingCardId, {
             name: processingCardName
           });
         }
@@ -4294,7 +4272,7 @@ app.post('/api/meshes/generate', async (req, res) => {
     let resolvedSource = null;
     let sourceAsset = null;
     if (effectiveImageSource) {
-      resolvedSource = await resolveProjectImageSource(Number(projectId), effectiveImageSource);
+      resolvedSource = await resolveProjectSource(Number(projectId), 'image', effectiveImageSource);
       sourceAsset = resolvedSource?.asset;
 
       if (!resolvedSource || !sourceAsset || sourceAsset.type !== 'image') {
@@ -4320,8 +4298,8 @@ app.post('/api/meshes/generate', async (req, res) => {
         generationType,
         polygonType
       });
-      const sourceFilePath = resolvedSource ? toAbsoluteStoragePath(resolvedSource.inputFilePath) : null;
-      const sourceBuffer = sourceFilePath ? await fs.readFile(sourceFilePath) : null;
+      // The bytes may live on the shared server, so read them through dataStore.
+      const sourceBuffer = resolvedSource ? await readAssetBytes(resolvedSource.inputFilePath) : null;
 
       await updateCardProcessingSnapshot(processingProjectId, processingCardId, {
         columnName: 'Mesh Gen',
@@ -4397,8 +4375,8 @@ app.post('/api/meshes/generate', async (req, res) => {
         selectedApi: String(selectedApi || '')
       }, null, 2));
 
-      const sourceFilePath = resolvedSource ? toAbsoluteStoragePath(resolvedSource.inputFilePath) : null;
-      const sourceBuffer = sourceFilePath ? await fs.readFile(sourceFilePath) : null;
+      // The bytes may live on the shared server, so read them through dataStore.
+      const sourceBuffer = resolvedSource ? await readAssetBytes(resolvedSource.inputFilePath) : null;
       const validatedInput = normalizeTripoMeshGenerationInput({
         prompt: trimmedPrompt,
         hasImageSource: Boolean(resolvedSource),
@@ -4511,8 +4489,8 @@ app.post('/api/meshes/generate', async (req, res) => {
     }
 
     if (isHitemMeshApi) {
-      const sourceFilePath = resolvedSource ? toAbsoluteStoragePath(resolvedSource.inputFilePath) : null;
-      const sourceBuffer = sourceFilePath ? await fs.readFile(sourceFilePath) : null;
+      // The bytes may live on the shared server, so read them through dataStore.
+      const sourceBuffer = resolvedSource ? await readAssetBytes(resolvedSource.inputFilePath) : null;
       const validatedInput = normalizeHitemMeshGenerationInput({
         hasImageSource: Boolean(sourceBuffer),
         model: req.body?.hitemModel,
@@ -4597,8 +4575,8 @@ app.post('/api/meshes/generate', async (req, res) => {
     });
 
     const customApi = getCustomApiConfig(settings, selectedApi, 'mesh-generation');
-    const sourceFilePath = toAbsoluteStoragePath(resolvedSource.inputFilePath);
-    const sourceBuffer = await fs.readFile(sourceFilePath);
+    // The bytes may live on the shared server, so read them through dataStore.
+    const sourceBuffer = await readAssetBytes(resolvedSource.inputFilePath);
     const imageMimeType = getMimeTypeFromFilename(resolvedSource.inputFilePath || resolvedSource.inputFilename || resolvedSource.inputName);
     const replacements = {
       prompt: trimmedPrompt,
@@ -4635,17 +4613,12 @@ app.post('/api/meshes/generate', async (req, res) => {
 
     const meshOutput = await extractMeshOutputFromApiResponse(response, responseBody);
     const extension = path.extname(meshOutput.filename).replace('.', '') || getExtensionFromContentType(meshOutput.contentType, 'glb');
-    const filename = `${Date.now()}-${Math.round(Math.random() * 1E9)}.${extension}`;
-    const storedFilePath = toStoredAssetPath('mesh', filename);
-    const absoluteFilePath = toAbsoluteStoragePath(storedFilePath);
-
-    await fs.mkdir(path.dirname(absoluteFilePath), { recursive: true });
-    await fs.writeFile(absoluteFilePath, meshOutput.buffer);
 
     const meshAssetPayload = {
       type: 'mesh',
       name: trimmedName,
-      filePath: storedFilePath,
+      bytes: meshOutput.buffer,
+      extension,
       metadata: {
         format: extension.toUpperCase(),
         source: 'API',
@@ -4659,10 +4632,10 @@ app.post('/api/meshes/generate', async (req, res) => {
     // When a mesh was connected to the node and used to edit it, save the
     // result as a version (child) of that mesh instead of a new root asset.
     const savedAsset = normalizedParentAssetId
-      ? await createAssetVersion({ assetId: normalizedParentAssetId, ...meshAssetPayload, inheritThumbnail: false, projectId: Number(projectId) })
-      : await createProjectAsset({ projectId: Number(projectId), ...meshAssetPayload });
+      ? await saveAssetVersion({ ...meshAssetPayload, parentAssetId: normalizedParentAssetId, projectId: Number(projectId) })
+      : await saveRootAsset({ ...meshAssetPayload, projectId: Number(projectId) });
 
-    await clearCardProcessingState(processingProjectId, processingCardId, {
+    await clearCardProcessing(processingProjectId, processingCardId, {
       name: processingCardName
     });
 
@@ -4794,7 +4767,7 @@ app.post('/api/meshes/generate/tencent/result', async (req, res) => {
     });
 
     if (cardId) {
-      await clearCardProcessingState(Number(projectId), cardId, {
+      await clearCardProcessing(Number(projectId), cardId, {
         name: trimmedName
       });
     }
@@ -4906,7 +4879,7 @@ app.post('/api/meshes/generate/tripo/result', async (req, res) => {
     });
 
     if (cardId) {
-      await clearCardProcessingState(Number(projectId), cardId, {
+      await clearCardProcessing(Number(projectId), cardId, {
         name: trimmedName
       });
     }
@@ -5011,7 +4984,7 @@ app.post('/api/meshes/generate/hitem/result', async (req, res) => {
     });
 
     if (cardId) {
-      await clearCardProcessingState(Number(projectId), cardId, {
+      await clearCardProcessing(Number(projectId), cardId, {
         name: trimmedName
       });
     }
@@ -5049,7 +5022,7 @@ app.post('/api/meshes/edit', async (req, res) => {
       return res.status(400).json({ error: 'Mesh edit currently supports custom APIs only' });
     }
 
-    const resolvedSource = await resolveProjectMeshSource(Number(projectId), meshSource);
+    const resolvedSource = await resolveProjectSource(Number(projectId), 'mesh', meshSource);
     const sourceAsset = resolvedSource?.asset;
     if (!resolvedSource || !sourceAsset || sourceAsset.type !== 'mesh') {
       return res.status(404).json({ error: 'Source mesh not found' });
@@ -5074,8 +5047,8 @@ app.post('/api/meshes/edit', async (req, res) => {
 
     const settings = await getSettings();
     const customApi = getCustomApiConfig(settings, selectedApi, 'mesh-edit');
-    const sourceFilePath = toAbsoluteStoragePath(resolvedSource.inputFilePath);
-    const sourceBuffer = await fs.readFile(sourceFilePath);
+    // The bytes may live on the shared server, so read them through dataStore.
+    const sourceBuffer = await readAssetBytes(resolvedSource.inputFilePath);
     const meshMimeType = getMimeTypeFromFilename(resolvedSource.inputFilePath || resolvedSource.inputFilename || resolvedSource.inputName);
     const replacements = {
       prompt: trimmedPrompt,
@@ -5112,20 +5085,15 @@ app.post('/api/meshes/edit', async (req, res) => {
 
     const meshOutput = await extractMeshOutputFromApiResponse(response, responseBody);
     const extension = path.extname(meshOutput.filename).replace('.', '') || getExtensionFromContentType(meshOutput.contentType, 'glb');
-    const filename = `${Date.now()}-${Math.round(Math.random() * 1E9)}.${extension}`;
-    const storedFilePath = toStoredAssetPath('mesh', filename);
-    const absoluteFilePath = toAbsoluteStoragePath(storedFilePath);
-
-    await fs.mkdir(path.dirname(absoluteFilePath), { recursive: true });
-    await fs.writeFile(absoluteFilePath, meshOutput.buffer);
-
     // The result was produced from an existing source mesh, so save it as a
     // version (child) of that mesh instead of creating a new root asset.
-    const savedAsset = await createAssetVersion({
-      assetId: sourceAsset.id,
+    // dataStore decides whether the bytes land here or on the shared server.
+    const savedAsset = await saveAssetVersion({
+      parentAssetId: sourceAsset.id,
       type: 'mesh',
       name: trimmedName,
-      filePath: storedFilePath,
+      bytes: meshOutput.buffer,
+      extension,
       metadata: {
         format: extension.toUpperCase(),
         source: 'API',
@@ -5138,7 +5106,7 @@ app.post('/api/meshes/edit', async (req, res) => {
       inheritThumbnail: false
     });
 
-    await clearCardProcessingState(processingProjectId, processingCardId, {
+    await clearCardProcessing(processingProjectId, processingCardId, {
       name: processingCardName
     });
 
@@ -5183,7 +5151,7 @@ app.post('/api/meshes/texture', async (req, res) => {
       return res.status(400).json({ error: 'Mesh texturing currently supports custom APIs only' });
     }
 
-    const resolvedSource = await resolveProjectMeshSource(Number(projectId), meshSource);
+    const resolvedSource = await resolveProjectSource(Number(projectId), 'mesh', meshSource);
     const sourceAsset = resolvedSource?.asset;
     if (!resolvedSource || !sourceAsset || sourceAsset.type !== 'mesh') {
       return res.status(404).json({ error: 'Source mesh not found' });
@@ -5208,8 +5176,8 @@ app.post('/api/meshes/texture', async (req, res) => {
 
     const settings = await getSettings();
     const customApi = getCustomApiConfig(settings, selectedApi, 'mesh-texturing');
-    const sourceFilePath = toAbsoluteStoragePath(resolvedSource.inputFilePath);
-    const sourceBuffer = await fs.readFile(sourceFilePath);
+    // The bytes may live on the shared server, so read them through dataStore.
+    const sourceBuffer = await readAssetBytes(resolvedSource.inputFilePath);
     const meshMimeType = getMimeTypeFromFilename(resolvedSource.inputFilePath || resolvedSource.inputFilename || resolvedSource.inputName);
     const replacements = {
       prompt: trimmedPrompt,
@@ -5246,20 +5214,15 @@ app.post('/api/meshes/texture', async (req, res) => {
 
     const meshOutput = await extractMeshOutputFromApiResponse(response, responseBody);
     const extension = path.extname(meshOutput.filename).replace('.', '') || getExtensionFromContentType(meshOutput.contentType, 'glb');
-    const filename = `${Date.now()}-${Math.round(Math.random() * 1E9)}.${extension}`;
-    const storedFilePath = toStoredAssetPath('mesh', filename);
-    const absoluteFilePath = toAbsoluteStoragePath(storedFilePath);
-
-    await fs.mkdir(path.dirname(absoluteFilePath), { recursive: true });
-    await fs.writeFile(absoluteFilePath, meshOutput.buffer);
-
     // The result was produced from an existing source mesh, so save it as a
     // version (child) of that mesh instead of creating a new root asset.
-    const savedAsset = await createAssetVersion({
-      assetId: sourceAsset.id,
+    // dataStore decides whether the bytes land here or on the shared server.
+    const savedAsset = await saveAssetVersion({
+      parentAssetId: sourceAsset.id,
       type: 'mesh',
       name: trimmedName,
-      filePath: storedFilePath,
+      bytes: meshOutput.buffer,
+      extension,
       metadata: {
         format: extension.toUpperCase(),
         source: 'API',
@@ -5272,7 +5235,7 @@ app.post('/api/meshes/texture', async (req, res) => {
       inheritThumbnail: false
     });
 
-    await clearCardProcessingState(processingProjectId, processingCardId, {
+    await clearCardProcessing(processingProjectId, processingCardId, {
       name: processingCardName
     });
 
@@ -5321,7 +5284,7 @@ app.post('/api/meshes/rigging', async (req, res) => {
       return res.status(400).json({ error: 'Mesh rigging currently supports custom APIs only' });
     }
 
-    const resolvedSource = await resolveProjectMeshSource(Number(projectId), meshSource);
+    const resolvedSource = await resolveProjectSource(Number(projectId), 'mesh', meshSource);
     const sourceAsset = resolvedSource?.asset;
     if (!resolvedSource || !sourceAsset || sourceAsset.type !== 'mesh') {
       return res.status(404).json({ error: 'Source mesh not found' });
@@ -5346,8 +5309,8 @@ app.post('/api/meshes/rigging', async (req, res) => {
 
     const settings = await getSettings();
     const customApi = getCustomApiConfig(settings, selectedApi, 'mesh-rigging');
-    const sourceFilePath = toAbsoluteStoragePath(resolvedSource.inputFilePath);
-    const sourceBuffer = await fs.readFile(sourceFilePath);
+    // The bytes may live on the shared server, so read them through dataStore.
+    const sourceBuffer = await readAssetBytes(resolvedSource.inputFilePath);
     const meshMimeType = getMimeTypeFromFilename(resolvedSource.inputFilePath || resolvedSource.inputFilename || resolvedSource.inputName);
     const replacements = {
       prompt: trimmedPrompt,
@@ -5384,20 +5347,15 @@ app.post('/api/meshes/rigging', async (req, res) => {
 
     const meshOutput = await extractMeshOutputFromApiResponse(response, responseBody);
     const extension = path.extname(meshOutput.filename).replace('.', '') || getExtensionFromContentType(meshOutput.contentType, 'glb');
-    const filename = `${Date.now()}-${Math.round(Math.random() * 1E9)}.${extension}`;
-    const storedFilePath = toStoredAssetPath('mesh', filename);
-    const absoluteFilePath = toAbsoluteStoragePath(storedFilePath);
-
-    await fs.mkdir(path.dirname(absoluteFilePath), { recursive: true });
-    await fs.writeFile(absoluteFilePath, meshOutput.buffer);
-
     // The result was produced from an existing source mesh, so save it as a
     // version (child) of that mesh instead of creating a new root asset.
-    const savedAsset = await createAssetVersion({
-      assetId: sourceAsset.id,
+    // dataStore decides whether the bytes land here or on the shared server.
+    const savedAsset = await saveAssetVersion({
+      parentAssetId: sourceAsset.id,
       type: 'mesh',
       name: trimmedName,
-      filePath: storedFilePath,
+      bytes: meshOutput.buffer,
+      extension,
       metadata: {
         format: extension.toUpperCase(),
         source: 'API',
@@ -5410,7 +5368,7 @@ app.post('/api/meshes/rigging', async (req, res) => {
       inheritThumbnail: false
     });
 
-    await clearCardProcessingState(processingProjectId, processingCardId, {
+    await clearCardProcessing(processingProjectId, processingCardId, {
       name: processingCardName
     });
 
@@ -6452,7 +6410,10 @@ app.put('/api/assets/:assetId/paint-document', paintDocumentUpload.any(), async 
 app.post('/api/assets/upload', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file provided' });
+    // Safe to read req.body.type now: multer has parsed the whole body, so the
+    // type no longer depends on the order the client sent its fields in.
     const assetType = req.body.type || inferAssetTypeFromFilename(req.file.originalname);
+    await commitStagedUpload(req.file, assetType);
     const inputMetadata = req.body.metadata ? JSON.parse(req.body.metadata) : {};
     const dimensions = assetType === 'image'
       ? getImageDimensionsFromBuffer(await fs.readFile(req.file.path), { filename: req.file.originalname, mimeType: req.file.mimetype })
@@ -6476,6 +6437,11 @@ app.post('/api/assets/upload', upload.single('file'), async (req, res) => {
     res.status(201).json(newAsset);
   } catch (err) {
     console.error('Upload recording failed:', err);
+    // No database row will reference these bytes, so don't leave them behind
+    // (whether still staged or already moved into the asset directory).
+    if (req.file?.path) {
+      await fs.unlink(req.file.path).catch(() => {});
+    }
     if (err.message?.startsWith('Project not found:')) {
       return res.status(404).json({ error: 'Project not found' });
     }
@@ -6520,6 +6486,231 @@ app.post('/api/assets/:id/thumbnail', thumbnailUpload.single('thumbnail'), async
   }
 });
 
+
+// Asset metadata lookups a remote-connected install needs. Its compute routes
+// run locally but the records live on the shared server, so the same resolvers
+// have to be reachable over HTTP. Both are plain reads under /api/assets, which
+// the gateway already forwards.
+app.get('/api/assets/record', async (req, res) => {
+  try {
+    const { assetId, type = 'mesh', filePath } = req.query;
+    const numericAssetId = Number(assetId);
+
+    const record = (Number.isFinite(numericAssetId) && numericAssetId > 0)
+      ? await getAssetRecordById(numericAssetId)
+      : (filePath ? await findAssetByFilePath(String(type), String(filePath)) : null);
+
+    if (!record) return res.status(404).json({ error: 'Asset not found' });
+    res.json(record);
+  } catch (err) {
+    console.error('Failed to read the asset record:', err);
+    res.status(500).json({ error: err.message || 'Failed to read the asset record' });
+  }
+});
+
+// Mirrors resolveProjectMeshSource / resolveProjectImageSource, which accept an
+// "asset:<id>", "edit:<path>" or bare-id reference.
+app.get('/api/assets/project-source', async (req, res) => {
+  try {
+    const { projectId, type = 'image', reference } = req.query;
+    if (!projectId || reference === undefined) {
+      return res.status(400).json({ error: 'projectId and reference are required' });
+    }
+
+    // Calls storage directly on purpose: this endpoint IS the authority a
+    // remote-connected install asks. Routing it back through dataStore would be
+    // circular the moment a server were itself pointed at another one.
+    const resolved = String(type).toLowerCase() === 'mesh'
+      ? await resolveProjectMeshSource(Number(projectId), reference)
+      : await resolveProjectImageSource(Number(projectId), reference);
+
+    if (!resolved) return res.status(404).json({ error: 'Source asset not found' });
+    res.json(resolved);
+  } catch (err) {
+    console.error('Failed to resolve the project source asset:', err);
+    res.status(500).json({ error: err.message || 'Failed to resolve the project source asset' });
+  }
+});
+// ---------------------------------------------------------------------------
+// Asset ingest (multi-user server mode)
+//
+// A local install does its GPU work itself, then has to land the result in the
+// shared database. It cannot call storage.js across the network, and it must
+// not reimplement it either: createAssetVersion() resolves the source asset,
+// walks to the root, inherits project links on both, and reads back a composed
+// view. That logic has to run where the data lives, so it is exposed here and
+// the gateway forwards to it (see dataStore.js).
+//
+// Bodies are staged to disk rather than buffered: a textured mesh version can
+// be hundreds of megabytes.
+// ---------------------------------------------------------------------------
+const assetIngestUpload = multer({ storage }).fields([
+  { name: 'file', maxCount: 1 },
+  { name: 'thumbnail', maxCount: 1 }
+]);
+
+// Move a staged thumbnail into the thumbnails directory. Returns the stored
+// filename, which is what the storage layer expects for thumbnailPath.
+async function commitStagedThumbnail(file, baseName) {
+  const thumbnailFilename = createLibraryThumbnailFilename(baseName || file.originalname || 'asset.png');
+  const absolute = toAbsoluteStoragePath(toStoredThumbnailPath(thumbnailFilename));
+  await fs.mkdir(path.dirname(absolute), { recursive: true });
+  await fs.rename(file.path, absolute);
+  return thumbnailFilename;
+}
+
+// Shared prologue: validate, move the staged files into place, and hand back the
+// payload plus the stored paths.
+async function prepareIngest(req, { requireFile = true } = {}) {
+  const assetId = Number(req.params.id);
+  if (!assetId) throw Object.assign(new Error('A valid asset id is required'), { status: 400 });
+
+  const file = req.files?.file?.[0] || null;
+  if (requireFile && !file) throw Object.assign(new Error('No file provided'), { status: 400 });
+
+  let payload = {};
+  if (req.body?.payload) {
+    try {
+      payload = JSON.parse(req.body.payload);
+    } catch {
+      throw Object.assign(new Error('payload must be valid JSON'), { status: 400 });
+    }
+  }
+
+  const type = String(payload.type || inferAssetTypeFromFilename(file?.originalname || '') || 'image');
+
+  // Callers may dictate the layout. Image edits in particular live under
+  // images/<source>/<editId>/, and deleting or renaming one looks the record up
+  // by that path — so a flat filename here would quietly break those.
+  const storedFilePath = file
+    ? toStoredAssetPath(type, payload.relativePath || file.filename)
+    : null;
+
+  if (file) {
+    const absolutePath = toAbsoluteStoragePath(storedFilePath);
+    const assetsRoot = toAbsoluteStoragePath('data/assets');
+    if (!path.resolve(absolutePath).startsWith(path.resolve(assetsRoot) + path.sep)) {
+      throw Object.assign(new Error('relativePath must stay inside the asset directory'), { status: 400 });
+    }
+    await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+    await fs.rename(file.path, absolutePath);
+    file.path = absolutePath;
+  }
+
+  const thumbnailFile = req.files?.thumbnail?.[0] || null;
+  const thumbnailPath = thumbnailFile
+    ? await commitStagedThumbnail(thumbnailFile, payload.name)
+    : null;
+
+  return { assetId, payload, type, storedFilePath, thumbnailPath };
+}
+
+// Discard bytes whose database row never got written.
+async function discardIngestFiles(req) {
+  for (const file of [...(req.files?.file || []), ...(req.files?.thumbnail || [])]) {
+    if (file?.path) await fs.unlink(file.path).catch(() => {});
+  }
+}
+
+function ingestFailed(res, err, what) {
+  console.error(`Failed to ${what}:`, err);
+  res.status(err.status || 500).json({ error: err.message || `Failed to ${what}` });
+}
+
+// Save bytes as a new VERSION of an existing asset (mesh pipeline results).
+app.post('/api/assets/:id/versions', assetIngestUpload, async (req, res) => {
+  try {
+    const { assetId, payload, type, storedFilePath, thumbnailPath } = await prepareIngest(req);
+    res.status(201).json(await createAssetVersion({
+      assetId,
+      type,
+      name: payload.name,
+      filePath: storedFilePath,
+      thumbnailPath,
+      width: payload.width,
+      height: payload.height,
+      metadata: payload.metadata || {},
+      createdAt: payload.createdAt || Date.now(),
+      // Default false: an ingest carries its own thumbnail or none, and silently
+      // inheriting the source's would mislabel a freshly generated result.
+      inheritThumbnail: payload.inheritThumbnail === true,
+      projectId: payload.projectId ?? null
+    }));
+  } catch (err) {
+    await discardIngestFiles(req);
+    ingestFailed(res, err, 'save the asset version');
+  }
+});
+
+// Save bytes as a new EDIT of an existing image asset.
+app.post('/api/assets/:id/edits', assetIngestUpload, async (req, res) => {
+  try {
+    const { assetId, payload, storedFilePath, thumbnailPath } = await prepareIngest(req);
+    const saved = await createAssetEditRecord({
+      assetId,
+      editId: payload.editId || randomUUID(),
+      name: payload.name || '',
+      filePath: storedFilePath,
+      width: payload.width,
+      height: payload.height,
+      createdAt: payload.createdAt || Date.now(),
+      projectId: payload.projectId ?? null
+    });
+    // createAssetEditRecord has no thumbnail argument, so apply one separately.
+    res.status(201).json(thumbnailPath && saved?.id
+      ? await updateAssetThumbnail(saved.id, thumbnailPath)
+      : saved);
+  } catch (err) {
+    await discardIngestFiles(req);
+    ingestFailed(res, err, 'save the asset edit');
+  }
+});
+
+// Replace an existing asset's file in place (keeps its id and links).
+app.post('/api/assets/:id/replace', assetIngestUpload, async (req, res) => {
+  try {
+    const { assetId, payload, type, storedFilePath, thumbnailPath } = await prepareIngest(req);
+    const saved = await replaceAssetFileById(assetId, {
+      name: payload.name,
+      type,
+      filePath: storedFilePath,
+      thumbnailPath,
+      width: payload.width,
+      height: payload.height,
+      metadata: payload.metadata || {}
+    });
+    if (!saved) return res.status(404).json({ error: 'Asset not found' });
+    res.json(saved);
+  } catch (err) {
+    await discardIngestFiles(req);
+    ingestFailed(res, err, 'replace the asset file');
+  }
+});
+
+// Card processing snapshots. These are what make the UI still show "processing"
+// after a reload, so a local install running a job has to write them to the
+// shared database rather than its own.
+app.put('/api/cards/:cardKey/processing', express.json({ limit: '1mb' }), async (req, res) => {
+  try {
+    const cardKey = String(req.params.cardKey || '');
+    const projectId = Number(req.body?.projectId);
+    if (!cardKey || !projectId) {
+      return res.status(400).json({ error: 'projectId and a card key are required' });
+    }
+
+    if (req.body?.clear === true) {
+      return res.json(await clearCardProcessingState(projectId, cardKey, {
+        name: req.body?.name,
+        keepCard: req.body?.keepCard
+      }));
+    }
+
+    res.json(await setCardProcessingState(projectId, cardKey, req.body?.state || {}));
+  } catch (err) {
+    ingestFailed(res, err, 'update the card processing state');
+  }
+});
+
 app.post('/api/meshes/editor/save', meshEditorSaveUpload.single('meshFile'), async (req, res) => {
   try {
     const { assetId, filePath, name, saveMode = 'replace' } = req.body || {};
@@ -6554,11 +6745,6 @@ app.post('/api/meshes/editor/save', meshEditorSaveUpload.single('meshFile'), asy
       : (sourceExtension === '.glb'
           ? toStoredAssetPath('mesh', sourceAsset.filePath)
           : toStoredAssetPath('mesh', createMeshEditorFilePath(nextName)));
-    const absoluteMeshPath = toAbsoluteStoragePath(storedMeshPath);
-
-    await fs.mkdir(path.dirname(absoluteMeshPath), { recursive: true });
-    await fs.writeFile(absoluteMeshPath, meshFile.buffer);
-
     const metadata = {
       ...JSON.parse(sourceAsset.metadata || '{}'),
       source: 'MESH EDITOR',
@@ -6567,27 +6753,27 @@ app.post('/api/meshes/editor/save', meshEditorSaveUpload.single('meshFile'), asy
       saveMode
     };
 
-    const savedAsset = saveMode === 'version'
-      ? await createAssetVersion({
-          assetId: sourceAsset.id,
-          name: nextName,
-          type: 'mesh',
-          filePath: storedMeshPath,
-          width: 0,
-          height: 0,
-          metadata,
-          createdAt: Date.now()
-        })
-      : await replaceAssetFileById(sourceAsset.id, {
-          name: nextName,
-          type: 'mesh',
-          filePath: storedMeshPath,
-          width: 0,
-          height: 0,
-          metadata
-        });
+    // The path above is deliberate — a .glb "replace" overwrites the source in
+    // place — so it is passed through rather than letting dataStore invent one.
+    const ingest = {
+      name: nextName,
+      type: 'mesh',
+      bytes: meshFile.buffer,
+      extension: 'glb',
+      relativePath: toAssetUrlPath(storedMeshPath),
+      width: 0,
+      height: 0,
+      metadata
+    };
 
-    if (saveMode === 'replace' && sourceAsset.filePath && sourceAsset.filePath !== storedMeshPath) {
+    const savedAsset = saveMode === 'version'
+      ? await saveAssetVersion({ ...ingest, parentAssetId: sourceAsset.id, createdAt: Date.now() })
+      : await replaceAssetFile({ ...ingest, assetId: sourceAsset.id });
+
+    // Only meaningful for a local store: when connected to a shared server the
+    // superseded file lives there, and a rename-extension replace leaves it
+    // behind as an orphan (wasted disk, never wrong data).
+    if (saveMode === 'replace' && !isGatewayActive() && sourceAsset.filePath && sourceAsset.filePath !== storedMeshPath) {
       await fs.rm(toAbsoluteStoragePath(sourceAsset.filePath), { force: true }).catch(() => null);
     }
 
@@ -7970,7 +8156,7 @@ app.post('/api/image-edits/api', async (req, res) => {
       return res.status(400).json({ error: 'projectId, selectedApi, prompt and name are required' });
     }
 
-    const resolvedSource = await resolveProjectImageSource(Number(projectId), imageSource || assetId);
+    const resolvedSource = await resolveProjectSource(Number(projectId), 'image', imageSource || assetId);
     const sourceAsset = resolvedSource?.asset;
     if (!resolvedSource || !sourceAsset || sourceAsset.type !== 'image') {
       return res.status(404).json({ error: 'Source image or edit not found' });
@@ -7999,8 +8185,8 @@ app.post('/api/image-edits/api', async (req, res) => {
     const openAiSettings = settings?.apis?.openai;
     const openAiEditSettings = openAiSettings?.imageEdit;
 
-    const sourceFilePath = toAbsoluteStoragePath(resolvedSource.inputFilePath);
-    const sourceBuffer = await fs.readFile(sourceFilePath);
+    // The bytes may live on the shared server, so read them through dataStore.
+    const sourceBuffer = await readAssetBytes(resolvedSource.inputFilePath);
     const mimeType = getMimeTypeFromFilename(resolvedSource.inputFilePath || resolvedSource.inputFilename || resolvedSource.inputName);
     const trimmedPrompt = String(prompt).trim();
     let response;
@@ -8131,7 +8317,7 @@ app.post('/api/image-edits/api', async (req, res) => {
       imageOutputs
     });
 
-    await clearCardProcessingState(processingProjectId, processingCardId, {
+    await clearCardProcessing(processingProjectId, processingCardId, {
       name: processingCardName
     });
 
@@ -8181,8 +8367,8 @@ app.post('/api/image-edits/comfy', async (req, res) => {
       return res.status(400).json({ error: 'projectId, workflowId and name are required' });
     }
 
-    const workflowRecord = await getWorkflowRecordById(Number(workflowId));
-    const workflow = workflowRecord ? await buildWorkflowResponse(workflowRecord) : null;
+    // The definition may live on the shared server; the run itself never does.
+    const workflow = await getWorkflowDefinition(workflowId, buildLocalWorkflowResponse);
 
     if (!workflow) {
       return res.status(404).json({ error: 'ComfyUI workflow not found in library' });
@@ -8220,12 +8406,12 @@ app.post('/api/image-edits/comfy', async (req, res) => {
           return res.status(400).json({ error: `An image asset is required for ${parameter.name}` });
         }
 
-        const resolvedImageSource = await resolveProjectImageSource(Number(projectId), sourceReference);
+        const resolvedImageSource = await resolveProjectSource(Number(projectId), 'image', sourceReference);
         if (!resolvedImageSource?.asset || resolvedImageSource.asset.type !== 'image') {
           return res.status(404).json({ error: `Image source not found for ${parameter.name}` });
         }
 
-        const inputBuffer = await fs.readFile(toAbsoluteStoragePath(resolvedImageSource.inputFilePath));
+        const inputBuffer = await readAssetBytes(resolvedImageSource.inputFilePath);
         resolvedInputs[parameter.id] = await uploadComfyInputFile(baseUrl, {
           buffer: inputBuffer,
           mimetype: getMimeTypeFromFilename(resolvedImageSource.inputFilePath || resolvedImageSource.inputFilename || resolvedImageSource.inputName),
@@ -8349,7 +8535,7 @@ app.post('/api/image-edits/comfy', async (req, res) => {
       imageOutputs: downloadedImages
     });
 
-    await clearCardProcessingState(processingProjectId, processingCardId, {
+    await clearCardProcessing(processingProjectId, processingCardId, {
       name: processingCardName
     });
 
@@ -8550,17 +8736,12 @@ app.post('/api/images/generate', async (req, res) => {
       filename: `generated.${extension}`,
       mimeType: inlineData.mimeType
     });
-    const filename = `${Date.now()}-${Math.round(Math.random() * 1E9)}.${extension}`;
-    const storedFilePath = toStoredAssetPath('image', filename);
-    const absoluteFilePath = toAbsoluteStoragePath(storedFilePath);
-
-    await fs.writeFile(absoluteFilePath, imageBuffer);
-
-    const newAsset = await createProjectAsset({
+    const newAsset = await saveRootAsset({
       projectId: Number(projectId),
       type: 'image',
       name: trimmedName,
-      filePath: storedFilePath,
+      bytes: imageBuffer,
+      extension,
       width: dimensions.width,
       height: dimensions.height,
       metadata: {
@@ -8579,7 +8760,7 @@ app.post('/api/images/generate', async (req, res) => {
     });
 
     if (!detachedAsset) {
-      await clearCardProcessingState(processingProjectId, processingCardId, {
+      await clearCardProcessing(processingProjectId, processingCardId, {
         name: processingCardName
       });
     }
@@ -8720,8 +8901,10 @@ async function refreshSystemStats() {
 }
 
 // Kick off the first refresh immediately, then keep it warm in the background.
-refreshSystemStats();
-setInterval(refreshSystemStats, 5000);
+if (SERVER_MODE !== 'server') {
+  refreshSystemStats();
+  setInterval(refreshSystemStats, 5000);
+}
 
 app.get('/api/system/stats', (req, res) => {
   if (!cachedSystemStats) {
@@ -8953,12 +9136,14 @@ async function runSetupDownloads(jobId, comfyPath, files, modelsPath) {
 
 async function deleteExistingWorkflowsByName(name) {
   const normalizedName = sanitizeDisplayName(name, 'Workflow');
-  const records = await listWorkflowRecords();
+  // Operates on whichever library the install writes to, so an overwrite does
+  // not delete locally while creating remotely.
+  const records = await listWorkflows();
   let deleted = 0;
   for (const record of records) {
     if (sanitizeDisplayName(record.name, 'Workflow') === normalizedName) {
       try {
-        await deleteLibraryAssetByFilePath('workflow', record.filePath, { force: true });
+        await deleteWorkflowByFilePath(record.filePath);
         deleted += 1;
       } catch (err) {
         console.warn(`[setup] failed to delete existing workflow ${record.name}:`, err.message);
@@ -9019,15 +9204,27 @@ async function installSetupWorkflow(workflowConfig, diffusionModelFileName = '')
     throw new Error(`Workflow "${workflowConfig.Name}" has no outputs configured`);
   }
 
-  const filePath = await saveWorkflowFile(workflowConfig.Name, workflowJson);
-  const workflowRecord = await createWorkflowRecord({
-    name: sanitizeDisplayName(workflowConfig.Name, 'Workflow'),
-    filePath,
-    parameters,
-    outputs
-  });
-
-  return workflowRecord;
+  // Installs into the shared library when this install is connected to a
+  // server: a bundled template written only to the local database would carry
+  // an id no teammate could resolve, which is exactly what shared definitions
+  // exist to prevent.
+  return await createWorkflow(
+    {
+      name: sanitizeDisplayName(workflowConfig.Name, 'Workflow'),
+      workflowJson,
+      parameters,
+      outputs
+    },
+    async () => {
+      const filePath = await saveWorkflowFile(workflowConfig.Name, workflowJson);
+      return await createWorkflowRecord({
+        name: sanitizeDisplayName(workflowConfig.Name, 'Workflow'),
+        filePath,
+        parameters,
+        outputs
+      });
+    }
+  );
 }
 
 async function pickFolderNative({ description = 'Select folder', initialPath = '' } = {}) {
@@ -9239,7 +9436,7 @@ app.post('/api/setup/install-workflows', async (req, res) => {
     }
 
     const existingByName = new Map();
-    for (const record of await listWorkflowRecords()) {
+    for (const record of await listWorkflows()) {
       existingByName.set(sanitizeDisplayName(record.name, 'Workflow'), record);
     }
 
@@ -9362,21 +9559,43 @@ if (HAS_DIST) {
 }
 
 initializeStorage().then(async () => {
+  // Server mode comes up usable without a shell: create the first admin from
+  // the environment when the Users table is still empty. A no-op afterwards.
+  if (SERVER_MODE === 'server') {
+    try {
+      await seedAdminFromEnv();
+    } catch (err) {
+      // Fatal on purpose. This used to be a console.warn, which meant the
+      // container came up "healthy" with no account at all and the only
+      // symptom was "Invalid credentials" for a user that was never created.
+      console.error(`\n❌ Could not create the initial administrator: ${err.message}`);
+      console.error('   The server has no usable account, so it is refusing to start.');
+      console.error('   Fix GENSTUDIO_ADMIN_LOGIN / GENSTUDIO_ADMIN_PASSWORD in your .env and restart.\n');
+      process.exit(1);
+    }
+  }
+
   try {
     await migrateWikiIfNeeded();
   } catch (err) {
     console.warn('Failed to prepare wiki documentation folder:', err.message);
   }
 
-  try {
-    const cleared = await clearStaleProcessingCards({
-      preservedSources: ['Tencent Cloud', 'Tripo AI', 'Hitem3D']
-    });
-    if (cleared > 0) {
-      console.log(`🧹 Cleared ${cleared} stale processing card(s) on startup`);
+  // Skipped in server mode: from Phase 4 on, a card marked "processing" is
+  // being worked on by some user's LOCAL machine, which this container knows
+  // nothing about, so clearing on restart would cancel live runs in the UI.
+  // A timestamp-based sweep belongs here instead, once runs are attributable.
+  if (SERVER_MODE !== 'server') {
+    try {
+      const cleared = await clearStaleProcessingCards({
+        preservedSources: ['Tencent Cloud', 'Tripo AI', 'Hitem3D']
+      });
+      if (cleared > 0) {
+        console.log(`🧹 Cleared ${cleared} stale processing card(s) on startup`);
+      }
+    } catch (err) {
+      console.warn('Failed to clear stale processing cards on startup:', err.message);
     }
-  } catch (err) {
-    console.warn('Failed to clear stale processing cards on startup:', err.message);
   }
 
   const server = app.listen(PORT, () => {

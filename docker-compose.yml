@@ -1,0 +1,49 @@
+# Shared 3D Gen Studio server. Each user still runs the desktop app locally for
+# ComfyUI and the mesh/rig/motion tools; this only holds the shared assets,
+# projects and user accounts.
+#
+#   1. cp .env.docker.example .env   (then edit it — a JWT secret is required)
+#   2. docker compose up -d
+#
+services:
+  genstudio-server:
+    build: .
+    image: 3dgenstudio-server:latest
+    restart: unless-stopped
+    ports:
+      - "${GENSTUDIO_PORT:-3001}:3001"
+    environment:
+      GENSTUDIO_MODE: server
+
+      # Required. The container refuses to start without it, on purpose: a
+      # per-restart secret would silently invalidate every session on deploy.
+      #   node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
+      GENSTUDIO_JWT_SECRET: ${GENSTUDIO_JWT_SECRET:?set GENSTUDIO_JWT_SECRET in .env}
+
+      # First-run only: creates the initial administrator while the Users table
+      # is empty, then does nothing. The password must be at least 8 characters —
+      # the server refuses to start if it cannot create this account, rather than
+      # coming up healthy with no login. Change it after first sign-in.
+      GENSTUDIO_ADMIN_LOGIN: ${GENSTUDIO_ADMIN_LOGIN:-admin}
+      GENSTUDIO_ADMIN_PASSWORD: ${GENSTUDIO_ADMIN_PASSWORD:?set GENSTUDIO_ADMIN_PASSWORD in .env}
+
+      # Controls the absolute asset URLs the API mints (getRequestBaseUrl() in
+      # server.js). Set PUBLIC_BASE_URL behind a reverse proxy — it wins outright
+      # and is the reliable option.
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+
+      # NOTE: the app trusts X-Forwarded-Proto/Host/Port by DEFAULT; only
+      # 0/false/no disables it. If this server is reachable directly rather than
+      # through a proxy, set it to 0 — otherwise any client can send
+      # X-Forwarded-Host and make the API hand other users asset URLs pointing
+      # at a host of its choosing.
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-}
+
+    volumes:
+      # Holds app.db plus every image, mesh, thumbnail and motion clip. This is
+      # the only stateful path — back it up. Must be <workdir>/data, because
+      # storage.js derives DATA_DIR from process.cwd().
+      - genstudio-data:/app/data
+
+volumes:
+  genstudio-data:

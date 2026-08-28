@@ -82,3 +82,10 @@ thirdparty/mocapanything/zoo/
 thirdparty/mocapanything/Truebone_Z-OO/
 thirdparty/mocapanything/videos/
 thirdparty/mocapanything/outputs/
+
+# Docker/server-mode secrets: JWT signing key and the initial admin password.
+# .env.docker.example is the committed template; the filled-in .env is not.
+/.env
+/.env.*
+!/.env.docker.example
+!/.env.development

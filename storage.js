@@ -1073,7 +1073,12 @@ function groupChildAssetsByParentFilePath(rows = [], baseUrl = null) {
     }
 
     const childAsset = mapChildAssetRow(row);
-    const childWithUrl = baseUrl
+    // Nullish, not truthy: an EMPTY baseUrl is a real value meaning "mint
+    // relative URLs", which is what getRequestBaseUrl() returns for a request
+    // arriving through a local gateway. Treating '' as "no base" left every
+    // edit and version with no url at all — a broken <img> for image edits and
+    // a placeholder tile for mesh versions.
+    const childWithUrl = baseUrl != null
       ? {
         ...childAsset,
         url: `${baseUrl}/assets/${encodeURI(childAsset.filename)}`,
@@ -1435,6 +1440,13 @@ export async function initializeStorage() {
   const db = await openDatabase(DB_FILE);
   await exec(db, 'PRAGMA foreign_keys = ON');
 
+  // Multi-user / server mode: WAL lets readers run concurrently with a writer,
+  // and busy_timeout makes a contended write wait instead of failing outright.
+  // journal_mode is persisted in the database file; the others are per-connection.
+  await exec(db, 'PRAGMA journal_mode = WAL').catch(() => {});
+  await exec(db, 'PRAGMA busy_timeout = 5000').catch(() => {});
+  await exec(db, 'PRAGMA synchronous = NORMAL').catch(() => {});
+
   // Migrate the legacy split schema (Nodes/Connections/KanbanColumns) into the
   // unified Cards model BEFORE the CREATE TABLE IF NOT EXISTS block, so the
   // new-schema statements don't create empty tables alongside the legacy ones
@@ -1547,6 +1559,23 @@ export async function initializeStorage() {
     CREATE TABLE IF NOT EXISTS Settings (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       json TEXT NOT NULL
+    );
+
+    -- Multi-user server mode. Absent/empty in a single-user desktop install,
+    -- where no authentication is applied at all. passwordHash is a self-describing
+    -- scrypt string (see auth.js) so the cost parameters can be raised later
+    -- without invalidating existing rows. login is compared case-insensitively
+    -- via COLLATE NOCASE so "Bruno" and "bruno" cannot both be registered.
+    CREATE TABLE IF NOT EXISTS Users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      login TEXT NOT NULL UNIQUE COLLATE NOCASE,
+      displayName TEXT,
+      passwordHash TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'user',
+      avatar TEXT,
+      createdAt INTEGER NOT NULL,
+      lastLoginAt INTEGER,
+      disabled INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS NodeTypes (
@@ -4507,6 +4536,114 @@ export async function saveSettings(settings) {
   const normalizedSettings = normalizeSettingsValue(settings);
   await run(db, 'INSERT INTO Settings (id, json) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET json = excluded.json', [JSON.stringify(normalizedSettings)]);
   return normalizedSettings;
+}
+
+// ---------------------------------------------------------------------------
+// Users (multi-user server mode)
+//
+// Rows are only ever created in server mode; a desktop install leaves the table
+// empty and applies no authentication. Every function here returns the "view"
+// shape (no passwordHash) except findUserByLogin, which the login flow needs in
+// order to verify a password — keep that asymmetry, it is the whole reason the
+// hash does not leak into API responses by accident.
+// ---------------------------------------------------------------------------
+
+export const USER_ROLES = ['admin', 'user', 'viewer'];
+
+export function normalizeUserRole(role) {
+  const normalized = String(role || '').trim().toLowerCase();
+  return USER_ROLES.includes(normalized) ? normalized : 'user';
+}
+
+function mapUserRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    login: row.login,
+    displayName: row.displayName || row.login,
+    role: row.role,
+    avatar: row.avatar || null,
+    createdAt: row.createdAt,
+    lastLoginAt: row.lastLoginAt || null,
+    disabled: row.disabled === 1
+  };
+}
+
+export async function countUsers() {
+  const db = await getDb();
+  const row = await get(db, 'SELECT COUNT(*) AS total FROM Users');
+  return Number(row?.total) || 0;
+}
+
+export async function listUsers() {
+  const db = await getDb();
+  const rows = await all(db, 'SELECT * FROM Users ORDER BY login COLLATE NOCASE');
+  return rows.map(mapUserRow);
+}
+
+export async function getUserById(userId) {
+  const db = await getDb();
+  return mapUserRow(await get(db, 'SELECT * FROM Users WHERE id = ?', [Number(userId)]));
+}
+
+// The only function that exposes passwordHash. Used by the login flow alone.
+export async function findUserByLogin(login) {
+  const db = await getDb();
+  const row = await get(db, 'SELECT * FROM Users WHERE login = ? COLLATE NOCASE', [String(login || '').trim()]);
+  if (!row) return null;
+  return { ...mapUserRow(row), passwordHash: row.passwordHash };
+}
+
+export async function createUser({ login, passwordHash, displayName = '', role = 'user', avatar = null, createdAt = Date.now() }) {
+  const normalizedLogin = String(login || '').trim();
+  if (!normalizedLogin) throw new Error('login is required');
+  if (!passwordHash) throw new Error('passwordHash is required');
+
+  const db = await getDb();
+  try {
+    const result = await run(
+      db,
+      'INSERT INTO Users (login, displayName, passwordHash, role, avatar, createdAt) VALUES (?, ?, ?, ?, ?, ?)',
+      [normalizedLogin, String(displayName || '').trim() || normalizedLogin, passwordHash, normalizeUserRole(role), avatar, createdAt]
+    );
+    return await getUserById(result.lastID);
+  } catch (err) {
+    // SQLITE_CONSTRAINT on the UNIQUE COLLATE NOCASE index.
+    if (String(err?.message || '').includes('UNIQUE')) throw new Error('A user with that login already exists');
+    throw err;
+  }
+}
+
+export async function updateUser(userId, updates = {}) {
+  const db = await getDb();
+  const existing = await getUserById(userId);
+  if (!existing) return null;
+
+  const fields = [];
+  const values = [];
+  if (updates.displayName !== undefined) { fields.push('displayName = ?'); values.push(String(updates.displayName || '').trim() || existing.login); }
+  if (updates.role !== undefined) { fields.push('role = ?'); values.push(normalizeUserRole(updates.role)); }
+  if (updates.avatar !== undefined) { fields.push('avatar = ?'); values.push(updates.avatar || null); }
+  if (updates.disabled !== undefined) { fields.push('disabled = ?'); values.push(updates.disabled ? 1 : 0); }
+  if (updates.passwordHash !== undefined) { fields.push('passwordHash = ?'); values.push(updates.passwordHash); }
+  if (fields.length === 0) return existing;
+
+  values.push(Number(userId));
+  await run(db, `UPDATE Users SET ${fields.join(', ')} WHERE id = ?`, values);
+  return await getUserById(userId);
+}
+
+export async function recordUserLogin(userId, at = Date.now()) {
+  const db = await getDb();
+  await run(db, 'UPDATE Users SET lastLoginAt = ? WHERE id = ?', [at, Number(userId)]);
+}
+
+export async function deleteUserById(userId) {
+  const db = await getDb();
+  const existing = await getUserById(userId);
+  if (!existing) return false;
+  await run(db, 'DELETE FROM Users WHERE id = ?', [Number(userId)]);
+  return true;
 }
 
 export async function listWorkflowRecords() {

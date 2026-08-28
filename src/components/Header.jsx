@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useNotifications } from '../context/NotificationContext'
 import LogsModal from './LogsModal'
+import RemoteStatusBanner from './RemoteStatusBanner'
 import './Header.css'
 import localVersionInfo from '../../version.json'
 
@@ -131,6 +132,7 @@ export default function Header({ showSearch = false, showCreateNew = false, onSe
   }
 
   return (
+    <>
     <header className="header" id="main-header">
       <div className="header__left">
         <Link to="/projects" className="header__logo">
@@ -340,5 +342,8 @@ export default function Header({ showSearch = false, showCreateNew = false, onSe
 
       {showLogs && <LogsModal onClose={() => setShowLogs(false)} />}
     </header>
+    {/* Rendered here rather than in each of the nine pages that mount a Header. */}
+    <RemoteStatusBanner />
+    </>
   )
 }

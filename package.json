@@ -1,7 +1,7 @@
 {
   "name": "app",
   "private": true,
-  "version": "2.7.0",
+  "version": "3.0.0",
   "type": "module",
   "main": "electron/main.cjs",
   "description": "AI-powered 3D mesh production studio — image generation, mesh generation, UV unwrapping, and texturing pipelines.",
@@ -20,11 +20,12 @@
     "preview": "vite preview",
     "mcp:stdio": "node mcp/stdio.js",
     "electron:dev": "npm run build && electron .",
-    "dist": "npm run build && electron-builder --publish never",
-    "dist:win": "npm run build && electron-builder --win --publish never",
-    "dist:mac": "npm run build && electron-builder --mac --publish never",
-    "dist:linux": "npm run build && electron-builder --linux --publish never",
-    "dist:dir": "npm run build && electron-builder --dir"
+    "check:packaging": "node tools/check-packaged-modules.mjs",
+    "dist": "npm run check:packaging && npm run build && electron-builder --publish never",
+    "dist:win": "npm run check:packaging && npm run build && electron-builder --win --publish never",
+    "dist:mac": "npm run check:packaging && npm run build && electron-builder --mac --publish never",
+    "dist:linux": "npm run check:packaging && npm run build && electron-builder --linux --publish never",
+    "dist:dir": "npm run check:packaging && npm run build && electron-builder --dir"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "^0.18.1",

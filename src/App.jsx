@@ -2,6 +2,7 @@ import { Routes, Route, Navigate } from 'react-router-dom'
 import { ProjectProvider } from './context/ProjectContext'
 import { SettingsProvider } from './context/SettingsContext'
 import { NotificationProvider } from './context/NotificationContext'
+import { RemoteProvider } from './context/RemoteContext'
 import { WorkflowJobsProvider } from './context/WorkflowJobsContext'
 import { BatchRunProvider } from './context/BatchRunContext'
 import ProjectsPage from './pages/ProjectsPage'
@@ -34,15 +35,19 @@ function AppRoutes() {
 export default function App() {
   return (
     <NotificationProvider>
-      <SettingsProvider>
-        <ProjectProvider>
-          <WorkflowJobsProvider>
-            <BatchRunProvider>
-              <AppRoutes />
-            </BatchRunProvider>
-          </WorkflowJobsProvider>
-        </ProjectProvider>
-      </SettingsProvider>
+      {/* Above the data providers: it is pure connection status with no
+          dependencies, and both the banner and the Server settings tab read it. */}
+      <RemoteProvider>
+        <SettingsProvider>
+          <ProjectProvider>
+            <WorkflowJobsProvider>
+              <BatchRunProvider>
+                <AppRoutes />
+              </BatchRunProvider>
+            </WorkflowJobsProvider>
+          </ProjectProvider>
+        </SettingsProvider>
+      </RemoteProvider>
     </NotificationProvider>
   )
 }
