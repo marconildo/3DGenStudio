@@ -395,6 +395,15 @@
       "position": 7,
       "createdAt": 1787935332291,
       "updatedAt": 1787935554578
+    },
+    {
+      "id": 45,
+      "parentId": 32,
+      "title": "MoCap",
+      "icon": "description",
+      "position": 3,
+      "createdAt": 1787935855857,
+      "updatedAt": 1787935864855
     }
   ]
 }
