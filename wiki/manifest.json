@@ -386,6 +386,15 @@
       "position": 2,
       "createdAt": 1787566174502,
       "updatedAt": 1787566182700
+    },
+    {
+      "id": 44,
+      "parentId": null,
+      "title": "Server Deployment",
+      "icon": "description",
+      "position": 7,
+      "createdAt": 1787935332291,
+      "updatedAt": 1787935554578
     }
   ]
 }
