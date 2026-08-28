@@ -22,7 +22,6 @@ import {
   createAssetVersion,
   createProjectAsset,
   clearCardProcessingState,
-  deleteLibraryAssetByFilePath,
   listWorkflowRecords,
   buildProjectExport,
   findAssetByFilePath,
@@ -311,7 +310,15 @@ async function getRemoteJson(remote, endpoint, what = 'so this asset could not b
   }
   if (response.status === 404) return null;
   if (!response.ok) {
-    throw new Error(`The shared server could not answer ${endpoint} (${response.status})`);
+    // Prefer the server's own message. It knows things the status code cannot
+    // say -- "this workflow belongs to another user" reads very differently
+    // from a bare 403, and is the difference between a fixable situation and a
+    // mystery.
+    let detail = '';
+    try {
+      detail = JSON.parse(await response.text())?.error || '';
+    } catch { /* not JSON -- fall back to the status */ }
+    throw new Error(detail || `The shared server could not answer ${endpoint} (${response.status})`);
   }
   return await response.json();
 }
@@ -399,22 +406,31 @@ export async function createWorkflow({ name, workflowJson, parameters = [], outp
   return await response.json();
 }
 
-export async function deleteWorkflowByFilePath(filePath) {
+// Replace a workflow's graph and configuration WITHOUT changing its id.
+//
+// The setup wizard's overwrite used to delete and re-create, which minted a new
+// id -- and every graph node, Batch stage and Kanban card stores that id, so a
+// re-import silently turned all of them into dangling references that only
+// failed at run time. `updateLocal` is injected for the same reason as in
+// getWorkflowDefinition: the local branch needs helpers that live in server.js.
+export async function updateWorkflow(workflowId, { name, workflowJson, parameters = [], outputs = [] }, updateLocal) {
   const remote = getRemoteTarget();
-  if (!remote) return await deleteLibraryAssetByFilePath('workflow', filePath, { force: true });
+  if (!remote) return await updateLocal();
 
-  const url = new URL('/api/assets/library', remote.url);
-  url.searchParams.set('type', 'workflow');
-  url.searchParams.set('filename', filePath);
-  url.searchParams.set('force', 'true');
-  const response = await fetch(url, {
-    method: 'DELETE',
-    headers: { authorization: `Bearer ${remote.token}`, 'x-genstudio-gateway': '1' }
+  const response = await fetch(new URL(`/api/library/comfy-workflows/${Number(workflowId)}`, remote.url), {
+    method: 'PUT',
+    headers: {
+      authorization: `Bearer ${remote.token}`,
+      'x-genstudio-gateway': '1',
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({ name, workflowJson, parameters, outputs })
   });
-  if (!response.ok && response.status !== 404) {
-    throw new Error(`The shared server refused to delete the workflow (${response.status})`);
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '');
+    throw new Error(`The shared server rejected the update to "${name}" (${response.status}): ${detail.slice(0, 200)}`);
   }
-  return { status: response.status === 404 ? 'not-found' : 'deleted' };
+  return await response.json();
 }
 
 // --- project export / import ---------------------------------------------

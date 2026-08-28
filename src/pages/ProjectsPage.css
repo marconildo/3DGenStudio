@@ -233,6 +233,27 @@
   font-family: var(--font-label);
 }
 
+/* Who created the project. Rendered only when a shared server supplies an
+   owner, so a desktop card is unchanged. */
+.project-card__owner {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--outline-variant);
+  color: var(--on-surface-variant);
+}
+
+.project-card__owner-name {
+  font-family: var(--font-label);
+  font-size: 0.68rem;
+  /* A long display name must not stretch the card or wrap onto a second line. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .project-card__action {
   position: absolute;
   top: 0.75rem;

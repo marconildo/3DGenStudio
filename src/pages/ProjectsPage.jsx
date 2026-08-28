@@ -904,6 +904,16 @@ export default function ProjectsPage() {
                     <span className="project-card__preset font-label">{project.preset}</span>
                     <span className="project-card__date">{formatDate(project.createdAt)}</span>
                   </div>
+
+                  {/* Only present when a shared server owns the project. A
+                      desktop install has no accounts, so there is no name to
+                      show and the row stays out of the layout entirely. */}
+                  {project.ownerName && (
+                    <div className="project-card__owner" title={`Created by ${project.ownerName}`}>
+                      <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>person</span>
+                      <span className="project-card__owner-name">{project.ownerName}</span>
+                    </div>
+                  )}
                 </div>
 
                 {/* Card actions */}

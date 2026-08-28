@@ -422,6 +422,25 @@ function mergeWithDefaults(defaultValue, currentValue) {
   return merged;
 }
 
+// Normalises a viewer id into "filter, or don't".
+//
+// Callers pass null for the two cases that see everything: a desktop install
+// (no accounts exist) and an administrator. Everyone else gets their own rows
+// plus the unowned ones. Keeping the decision here means a listing cannot
+// accidentally forget the NULL case and hide legacy data.
+export function ownerScope(viewerId) {
+  const id = Number(viewerId);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+// SQL fragment + params for scoping a query, so the filter is written once.
+function ownerFilter(viewerId, column) {
+  const id = ownerScope(viewerId);
+  return id === null
+    ? { clause: '', params: [] }
+    : { clause: ` AND (${column} IS NULL OR ${column} = ?)`, params: [id] };
+}
+
 function mapProjectRow(row) {
   return {
     id: row.id,
@@ -430,7 +449,11 @@ function mapProjectRow(row) {
     preset: row.preset || '',
     createdAt: row.creationDate,
     status: row.status || 'active',
-    graphViewport: parseJson(row.graphViewport, null)
+    graphViewport: parseJson(row.graphViewport, null),
+    ownerId: row.ownerId ?? null,
+    // Joined in so the Projects page can label a card without a second request
+    // per project. Null for unowned projects and on desktop installs.
+    ownerName: row.ownerName || null
   };
 }
 
@@ -965,23 +988,38 @@ export async function removeAssetTag(assetId, tag) {
 // The whole known vocabulary with usage counts, for the filter dropdown and the
 // tag-input suggestions. Optionally scoped to one asset type so the Images
 // section never suggests a tag that only meshes use.
-export async function listAllAssetTags({ type = null } = {}) {
+export async function listAllAssetTags({ type = null, viewerId = null } = {}) {
   const db = await getDb();
   const params = [];
-  let typeClause = '';
+  const scope = ownerFilter(viewerId, 'a.ownerId');
 
-  if (type) {
-    typeClause = `JOIN Assets a ON a.id = t.assetId
+  // The Assets join is unconditional once a scope is in play: without it the
+  // vocabulary would list tag names taken from other users' assets, which is a
+  // small leak but still a leak.
+  const needsAssetJoin = Boolean(type) || scope.clause !== '';
+  const joinClause = needsAssetJoin
+    ? `JOIN Assets a ON a.id = t.assetId
        JOIN AssetTypes at ON at.id = a.assetTypeId
-       `;
+       `
+    : '';
+
+  const conditions = [];
+  if (type) {
+    conditions.push('at.name = ?');
     params.push(normalizeAssetTypeName(type));
+  }
+  if (scope.clause) {
+    // ownerFilter returns a leading " AND ..."; this is the first condition
+    // when there is no type filter, so strip it and let the join do the rest.
+    conditions.push(scope.clause.replace(/^ AND /, ''));
+    params.push(...scope.params);
   }
 
   const rows = await all(
     db,
     `SELECT t.tag AS tag, COUNT(*) AS count
      FROM Assets_Tags t
-     ${typeClause}${type ? 'WHERE at.name = ?' : ''}
+     ${joinClause}${conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''}
      GROUP BY t.tag
      ORDER BY count DESC, t.tag ASC`,
     params
@@ -994,7 +1032,7 @@ export async function listAllAssetTags({ type = null } = {}) {
 // mirrors the Assets page filter (an asset must carry EVERY selected tag);
 // pass false for a union search ("anything sci-fi or fantasy"). `type` and
 // `projectId` narrow the same way the page's sections and project filter do.
-export async function findAssetsByTags(tags = [], { matchAll = true, type = null, projectId = null, limit = 200 } = {}) {
+export async function findAssetsByTags(tags = [], { matchAll = true, type = null, projectId = null, limit = 200, viewerId = null } = {}) {
   const wantedTags = normalizeTagList(tags);
 
   if (wantedTags.length === 0) {
@@ -1017,6 +1055,10 @@ export async function findAssetsByTags(tags = [], { matchAll = true, type = null
        )`;
     params.push(Number(projectId));
   }
+
+  const tagScope = ownerFilter(viewerId, 'a.ownerId');
+  whereClause += tagScope.clause;
+  params.push(...tagScope.params);
 
   // Count the DISTINCT matched tags per asset so "match all" is a HAVING check
   // rather than N queries intersected in JS.
@@ -1461,13 +1503,22 @@ export async function initializeStorage() {
   await exec(
     db,
     `
+    -- ownerId on Projects and Assets: on a shared server everything belongs to
+    -- the user who made it, and nobody sees anyone else's -- administrators
+    -- excepted, who see everything.
+    --
+    -- NULL means unowned and stays visible to everyone. That covers every row on
+    -- a single-user desktop install (no accounts exist to own anything, and the
+    -- behaviour there must be exactly as before) and any row written before
+    -- ownership existed.
     CREATE TABLE IF NOT EXISTS Projects (
       id INTEGER PRIMARY KEY,
       name TEXT NOT NULL,
       description TEXT,
       preset TEXT,
       creationDate INTEGER NOT NULL,
-      status TEXT NOT NULL DEFAULT 'active'
+      status TEXT NOT NULL DEFAULT 'active',
+      ownerId INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS Columns (
@@ -1524,6 +1575,10 @@ export async function initializeStorage() {
       width INTEGER NOT NULL DEFAULT 0,
       height INTEGER NOT NULL DEFAULT 0,
       parentId INTEGER,
+      -- Who created or imported this. See Projects.ownerId for the full rules;
+      -- an edit or version inherits its parent's owner so a chain never splits
+      -- between two libraries.
+      ownerId INTEGER,
       FOREIGN KEY(parentId) REFERENCES Assets(id) ON DELETE CASCADE,
       FOREIGN KEY(assetTypeId) REFERENCES AssetTypes(id)
     );
@@ -1553,6 +1608,15 @@ export async function initializeStorage() {
       assetId INTEGER PRIMARY KEY,
       parametersJson TEXT NOT NULL DEFAULT '[]',
       outputsJson TEXT NOT NULL DEFAULT '[]',
+      -- Which user imported this workflow. A workflow is written against one
+      -- person's ComfyUI -- their models, their node packs -- so on a shared
+      -- server everyone gets their own library rather than one global set that
+      -- the next import replaces.
+      --
+      -- NULL means unowned, and stays visible to everyone. That is every
+      -- workflow on a single-user desktop install, where there are no accounts
+      -- to own anything and the behaviour must be exactly as before.
+      ownerId INTEGER,
       FOREIGN KEY(assetId) REFERENCES Assets(id) ON DELETE CASCADE
     );
 
@@ -1728,12 +1792,27 @@ export async function initializeStorage() {
     await run(db, 'ALTER TABLE Assets ADD COLUMN parentId INTEGER');
   }
 
+  if (!assetColumns.some(column => column.name === 'ownerId')) {
+    await run(db, 'ALTER TABLE Assets ADD COLUMN ownerId INTEGER');
+  }
+
+  const workflowConfigColumns = await all(db, 'PRAGMA table_info(WorkflowConfigs)');
+  if (!workflowConfigColumns.some(column => column.name === 'ownerId')) {
+    await run(db, 'ALTER TABLE WorkflowConfigs ADD COLUMN ownerId INTEGER');
+  }
+
   const projectColumns = await all(db, 'PRAGMA table_info(Projects)');
   if (!projectColumns.some(column => column.name === 'graphViewport')) {
     await run(db, 'ALTER TABLE Projects ADD COLUMN graphViewport TEXT');
   }
+  if (!projectColumns.some(column => column.name === 'ownerId')) {
+    await run(db, 'ALTER TABLE Projects ADD COLUMN ownerId INTEGER');
+  }
 
   await run(db, 'CREATE INDEX IF NOT EXISTS idx_assets_parentId ON Assets(parentId)');
+  // Every scoped listing filters on these, so they are read on nearly every request.
+  await run(db, 'CREATE INDEX IF NOT EXISTS idx_assets_ownerId ON Assets(ownerId)');
+  await run(db, 'CREATE INDEX IF NOT EXISTS idx_projects_ownerId ON Projects(ownerId)');
   await run(db, 'CREATE INDEX IF NOT EXISTS idx_cards_projectId ON Cards(projectId)');
   await run(db, 'CREATE INDEX IF NOT EXISTS idx_connections_sourceCardId ON Connections(sourceCardId)');
   await run(db, 'CREATE INDEX IF NOT EXISTS idx_connections_targetCardId ON Connections(targetCardId)');
@@ -2126,12 +2205,22 @@ async function getCardAttributeView(cardId, position) {
   return row ? mapCardAttributeRow(row) : null;
 }
 
-async function insertAsset({ name, type, filePath, thumbnailPath = null, width = 0, height = 0, metadata = {}, createdAt = Date.now(), parentId = null }) {
+async function insertAsset({ name, type, filePath, thumbnailPath = null, width = 0, height = 0, metadata = {}, createdAt = Date.now(), parentId = null, ownerId = null }) {
   const db = await getDb();
   const assetTypeId = await getAssetTypeIdByName(type);
+
+  // An edit or version belongs to whoever owns the asset it came from, not to
+  // whoever happened to run the job. Otherwise a chain would split across two
+  // libraries and half of it would vanish from its owner's view.
+  let resolvedOwnerId = ownerScope(ownerId);
+  if (parentId) {
+    const parent = await get(db, 'SELECT ownerId FROM Assets WHERE id = ?', [Number(parentId)]);
+    if (parent) resolvedOwnerId = parent.ownerId ?? null;
+  }
+
   const result = await run(
     db,
-    'INSERT INTO Assets (name, filePath, assetTypeId, creationDate, metadata, thumbnail, width, height, parentId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO Assets (name, filePath, assetTypeId, creationDate, metadata, thumbnail, width, height, parentId, ownerId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     [
       name,
       toStoredAssetPath(type, filePath),
@@ -2141,11 +2230,19 @@ async function insertAsset({ name, type, filePath, thumbnailPath = null, width =
       thumbnailPath ? toStoredThumbnailPath(thumbnailPath) : null,
       Number(width) || 0,
       Number(height) || 0,
-      parentId ? Number(parentId) : null
+      parentId ? Number(parentId) : null,
+      resolvedOwnerId
     ]
   );
 
   return result.lastID;
+}
+
+// The owner of one asset, for routes that must decide before acting.
+export async function getAssetOwnerId(assetId) {
+  const db = await getDb();
+  const row = await get(db, 'SELECT ownerId FROM Assets WHERE id = ?', [Number(assetId)]);
+  return row ? (row.ownerId ?? null) : undefined;   // undefined = no such asset
 }
 
 // Project membership comes from Assets_Projects; the card join only supplies
@@ -2573,9 +2670,18 @@ export async function resolveProjectMeshSource(projectId, sourceReference) {
   return await resolveProjectAssetSourceById(projectId, assetId, 'Mesh');
 }
 
-export async function listProjects() {
+export async function listProjects(viewerId = null) {
   const db = await getDb();
-  const rows = await all(db, 'SELECT * FROM Projects ORDER BY creationDate DESC');
+  const { clause, params } = ownerFilter(viewerId, 'p.ownerId');
+  const rows = await all(
+    db,
+    `SELECT p.*, COALESCE(u.displayName, u.login) AS ownerName
+     FROM Projects p
+     LEFT JOIN Users u ON u.id = p.ownerId
+     WHERE 1 = 1${clause}
+     ORDER BY p.creationDate DESC`,
+    params
+  );
   return rows.map(mapProjectRow);
 }
 
@@ -2587,13 +2693,14 @@ export async function createProject(projectData = {}) {
     description: projectData.description || '',
     preset: projectData.preset || '',
     createdAt: Date.now(),
-    status: projectData.status || 'active'
+    status: projectData.status || 'active',
+    ownerId: ownerScope(projectData.ownerId)
   };
 
   await run(
     db,
-    'INSERT INTO Projects (id, name, description, preset, creationDate, status) VALUES (?, ?, ?, ?, ?, ?)',
-    [project.id, project.name, project.description, project.preset, project.createdAt, project.status]
+    'INSERT INTO Projects (id, name, description, preset, creationDate, status, ownerId) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [project.id, project.name, project.description, project.preset, project.createdAt, project.status, project.ownerId]
   );
 
   return project;
@@ -2624,9 +2731,18 @@ export async function updateProject(projectId, updates = {}) {
   return row ? mapProjectRow(row) : null;
 }
 
+// Deliberately unscoped: it returns ownerId and lets the caller decide, so a
+// route can answer "that project is Bruno's" instead of "no such project".
 export async function getProjectById(projectId) {
   const db = await getDb();
-  const row = await get(db, 'SELECT * FROM Projects WHERE id = ?', [projectId]);
+  const row = await get(
+    db,
+    `SELECT p.*, COALESCE(u.displayName, u.login) AS ownerName
+     FROM Projects p
+     LEFT JOIN Users u ON u.id = p.ownerId
+     WHERE p.id = ?`,
+    [projectId]
+  );
   return row ? mapProjectRow(row) : null;
 }
 
@@ -3526,10 +3642,14 @@ export async function createTask(projectId, taskData = {}) {
 // child linked to a project its root is NOT in — there is no root row to nest it
 // under, so it surfaces as a top-level row (with parentId set). Pass
 // includeChildren to get every linked child as a row regardless.
-export async function listProjectAssets(projectId = null, { includeChildren = false } = {}) {
+export async function listProjectAssets(projectId = null, { includeChildren = false, viewerId = null } = {}) {
   const db = await getDb();
   const params = [];
   let whereClause = `WHERE at.name IN ('Image', 'Mesh')`;
+
+  const assetScope = ownerFilter(viewerId, 'a.ownerId');
+  whereClause += assetScope.clause;
+  params.push(...assetScope.params);
 
   if (projectId !== null && projectId !== undefined) {
     whereClause += ' AND ap.projectId = ?';
@@ -3941,7 +4061,7 @@ export async function moveCard(projectId, externalCardId, kanbanColumnId, positi
   return await resolveProjectCard(projectId, externalCardId);
 }
 
-export async function createProjectAsset({ projectId, type, name, filePath, thumbnailPath = null, width = 0, height = 0, metadata = {}, createdAt = Date.now(), detached = false }) {
+export async function createProjectAsset({ projectId, type, name, filePath, thumbnailPath = null, width = 0, height = 0, metadata = {}, createdAt = Date.now(), detached = false, ownerId = null }) {
   const normalizedProjectId = await ensureProjectExists(projectId);
 
   // `detached` means "part of the project, but with no place on the Kanban
@@ -3961,7 +4081,14 @@ export async function createProjectAsset({ projectId, type, name, filePath, thum
     width,
     height,
     metadata,
-    createdAt
+    createdAt,
+    // Everything inside a project belongs to whoever owns the PROJECT, not to
+    // whoever happened to create it. An administrator adding an asset to
+    // Bruno's project is acting on Bruno's behalf; stamping it to the admin
+    // would leave Bruno with an asset in his own project that he cannot see,
+    // because the listings scope by asset owner. `ownerId` is only a fallback
+    // for a project that has no owner.
+    ownerId: (await get(await getDb(), 'SELECT ownerId FROM Projects WHERE id = ?', [normalizedProjectId]))?.ownerId ?? ownerId ?? null
   });
   const db = await getDb();
 
@@ -3992,7 +4119,7 @@ export async function updateAssetThumbnail(assetId, thumbnailPath) {
   return await getAssetViewById(Number(assetId));
 }
 
-export async function createLibraryAsset({ name, type, filePath, thumbnailPath = null, width = 0, height = 0, metadata = {}, createdAt = Date.now() }) {
+export async function createLibraryAsset({ name, type, filePath, thumbnailPath = null, width = 0, height = 0, metadata = {}, createdAt = Date.now(), ownerId = null }) {
   const assetId = await insertAsset({
     name,
     type,
@@ -4001,7 +4128,8 @@ export async function createLibraryAsset({ name, type, filePath, thumbnailPath =
     width,
     height,
     metadata,
-    createdAt
+    createdAt,
+    ownerId
   });
 
   return await getAssetViewById(assetId);
@@ -4646,26 +4774,39 @@ export async function deleteUserById(userId) {
   return true;
 }
 
-export async function listWorkflowRecords() {
+// `viewerId` scopes the library to one user on a shared server. Pass null (a
+// desktop install, where there are no accounts) and nothing is filtered, so the
+// single-user behaviour is unchanged. Unowned workflows stay visible to
+// everyone: they predate per-user libraries and belong to no one to hide them
+// from.
+export async function listWorkflowRecords(viewerId = null) {
   const db = await getDb();
+  const numericViewerId = Number(viewerId);
+  const scoped = Number.isFinite(numericViewerId) && numericViewerId > 0;
+
   return await all(
     db,
     `SELECT a.id, a.name, a.filePath, a.creationDate,
-            wc.parametersJson, wc.outputsJson
+            wc.parametersJson, wc.outputsJson, wc.ownerId
      FROM Assets a
      JOIN AssetTypes at ON at.id = a.assetTypeId
      LEFT JOIN WorkflowConfigs wc ON wc.assetId = a.id
      WHERE at.name = 'Workflow'
-     ORDER BY a.creationDate DESC`
+       ${scoped ? 'AND (wc.ownerId IS NULL OR wc.ownerId = ?)' : ''}
+     ORDER BY a.creationDate DESC`,
+    scoped ? [numericViewerId] : []
   );
 }
 
+// Deliberately NOT scoped: it returns `ownerId` and lets the caller decide.
+// A route that 404s another user's workflow cannot tell them why, and "no such
+// workflow" reads as data loss when the real answer is "that one is Bruno's".
 export async function getWorkflowRecordById(workflowId) {
   const db = await getDb();
   return await get(
     db,
     `SELECT a.id, a.name, a.filePath, a.creationDate,
-            wc.parametersJson, wc.outputsJson
+            wc.parametersJson, wc.outputsJson, wc.ownerId
      FROM Assets a
      JOIN AssetTypes at ON at.id = a.assetTypeId
      LEFT JOIN WorkflowConfigs wc ON wc.assetId = a.id
@@ -4674,7 +4815,7 @@ export async function getWorkflowRecordById(workflowId) {
   );
 }
 
-export async function createWorkflowRecord({ name, filePath, parameters = [], outputs = [] }) {
+export async function createWorkflowRecord({ name, filePath, parameters = [], outputs = [], ownerId = null }) {
   const assetId = await insertAsset({
     name,
     type: 'workflow',
@@ -4684,10 +4825,16 @@ export async function createWorkflowRecord({ name, filePath, parameters = [], ou
   });
   const db = await getDb();
 
+  const numericOwnerId = Number(ownerId);
   await run(
     db,
-    'INSERT INTO WorkflowConfigs (assetId, parametersJson, outputsJson) VALUES (?, ?, ?)',
-    [assetId, JSON.stringify(parameters), JSON.stringify(outputs)]
+    'INSERT INTO WorkflowConfigs (assetId, parametersJson, outputsJson, ownerId) VALUES (?, ?, ?, ?)',
+    [
+      assetId,
+      JSON.stringify(parameters),
+      JSON.stringify(outputs),
+      Number.isFinite(numericOwnerId) && numericOwnerId > 0 ? numericOwnerId : null
+    ]
   );
 
   return await getWorkflowRecordById(assetId);
@@ -4703,6 +4850,8 @@ export async function updateWorkflowRecord(workflowId, { name, parameters = [], 
   } else {
     await run(db, 'UPDATE Assets SET name = ? WHERE id = ?', [name, workflowId]);
   }
+  // ownerId is deliberately absent from the DO UPDATE list: editing a workflow
+  // must never move it to another user's library.
   await run(
     db,
     `INSERT INTO WorkflowConfigs (assetId, parametersJson, outputsJson)
@@ -4751,19 +4900,20 @@ export async function getWikiPage(id) {
   return row ? mapWikiPageRow(row) : null;
 }
 
-export async function listLibraryAssetsByType(type, baseUrl) {
+export async function listLibraryAssetsByType(type, baseUrl, viewerId = null) {
   const db = await getDb();
   const assetDirectory = getAssetDirectory(type);
   await fs.mkdir(assetDirectory, { recursive: true });
+  const scope = ownerFilter(viewerId, 'a.ownerId');
   const rows = await all(
     db,
      `SELECT a.id, a.name, a.filePath, a.thumbnail, a.width, a.height, a.creationDate
      FROM Assets a
      JOIN AssetTypes at ON at.id = a.assetTypeId
      WHERE at.name = ?
-       AND a.parentId IS NULL
+       AND a.parentId IS NULL${scope.clause}
      ORDER BY a.creationDate DESC`,
-    [normalizeAssetTypeName(type)]
+    [normalizeAssetTypeName(type), ...scope.params]
   );
 
   const candidateStoredPaths = [...new Set(rows.map(row => row.filePath).filter(Boolean))];
@@ -5535,7 +5685,7 @@ function makeUniqueAssetFilename(originalBasename) {
 
 // Recreate a project from a parsed .3dgp manifest + the folder that holds its
 // asset files. Runs in a single transaction; everything rolls back on error.
-export async function importProjectExport(manifest, bundleDir, { name } = {}) {
+export async function importProjectExport(manifest, bundleDir, { name, ownerId = null } = {}) {
   if (!manifest || typeof manifest !== 'object') {
     throw new Error('The .3dgp file is empty or invalid.');
   }
@@ -5551,10 +5701,11 @@ export async function importProjectExport(manifest, bundleDir, { name } = {}) {
   try {
     const newProjectId = await allocateProjectId(db);
     const createdAt = Date.now();
+    const importOwnerId = ownerScope(ownerId);
     await run(
       db,
-      'INSERT INTO Projects (id, name, description, preset, creationDate, status) VALUES (?, ?, ?, ?, ?, ?)',
-      [newProjectId, projectName, proj.description || '', proj.preset || '', createdAt, proj.status || 'active']
+      'INSERT INTO Projects (id, name, description, preset, creationDate, status, ownerId) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [newProjectId, projectName, proj.description || '', proj.preset || '', createdAt, proj.status || 'active', importOwnerId]
     );
 
     const assetIdMap = new Map();   // original refId -> new asset id
@@ -5597,7 +5748,7 @@ export async function importProjectExport(manifest, bundleDir, { name } = {}) {
       const assetTypeId = await getAssetTypeIdByName(asset.typeName);
       const result = await run(
         db,
-        'INSERT INTO Assets (name, filePath, assetTypeId, creationDate, metadata, thumbnail, width, height, parentId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO Assets (name, filePath, assetTypeId, creationDate, metadata, thumbnail, width, height, parentId, ownerId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [
           asset.name || 'Asset',
           newStoredPath,
@@ -5607,7 +5758,8 @@ export async function importProjectExport(manifest, bundleDir, { name } = {}) {
           thumbnailStored,
           Number(asset.width) || 0,
           Number(asset.height) || 0,
-          parentNewId
+          parentNewId,
+          importOwnerId
         ]
       );
       const newId = result.lastID;

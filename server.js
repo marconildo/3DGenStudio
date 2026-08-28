@@ -21,7 +21,7 @@ import { moveGlbPivot, PIVOT_MODES } from './meshPivot.js';
 import { mountAuth, resolveJwtSecret, seedAdminFromEnv } from './auth.js';
 import { mountLocalOnlyGuard } from './serverMode.js';
 import { isGatewayActive, mountGateway } from './gateway.js';
-import { buildProjectExportPlan, clearCardProcessing, copyAssetFileTo, createWorkflow, deleteWorkflowByFilePath, importProject, listWorkflows, getAssetRecord, getWorkflowDefinition, readAssetBytes, resolveProjectSource, replaceAssetFile, saveAssetEdit, saveAssetVersion, saveRootAsset, setCardProcessing } from './dataStore.js';
+import { buildProjectExportPlan, clearCardProcessing, copyAssetFileTo, createWorkflow, importProject, listWorkflows, getAssetRecord, getWorkflowDefinition, readAssetBytes, resolveProjectSource, replaceAssetFile, saveAssetEdit, saveAssetVersion, saveRootAsset, setCardProcessing, updateWorkflow } from './dataStore.js';
 
 // Node 20 (bundled by Electron 33) has no global WebSocket, so fall back to the
 // `ws` package. Newer Node runtimes (dev) expose a global WebSocket we can reuse.
@@ -76,6 +76,7 @@ import {
   listProjectNodes,
   getProjectById,
   getSettings,
+  getAssetOwnerId,
   getWorkflowRecordById,
   initializeStorage,
   listLibraryAssetsByType,
@@ -386,6 +387,61 @@ if (SERVER_MODE === 'server') {
   }
 }
 mountAuth(app, { secret: JWT_SECRET, mode: SERVER_MODE });
+
+// Project ownership, enforced in ONE place rather than on each of the ~30
+// routes that take a projectId. Cards, graph nodes, connections, boards, the
+// Batch config, tags and project assets are all addressed by project, so a
+// single check here covers them; adding a new project-scoped route cannot
+// forget it.
+//
+// Mounted after mountAuth (it needs req.user) and after express.json() (a
+// projectId may arrive in the body). Local installs never reach the lookup: no
+// accounts, so scopeId is null and there is nothing to scope to.
+app.use(async (req, res, next) => {
+  if (!req.user) return next();
+
+  // Path form: /api/projects/<digits>/... . Digits only, so /api/projects/import
+  // and the collection routes fall through.
+  const fromPath = /^\/api\/projects\/(\d+)(?:\/|$)/.exec(req.path)?.[1];
+  const raw = fromPath ?? req.query?.projectId ?? req.body?.projectId;
+  const projectId = Number(raw);
+  if (!Number.isFinite(projectId) || projectId <= 0) return next();
+
+  try {
+    const project = await getProjectById(projectId);
+    // A missing project is left to the route: it knows whether that is a 404, a
+    // no-op, or (for a create) perfectly fine.
+    if (project && !mayUse(project.ownerId, req)) {
+      return res.status(403).json({ error: 'This project belongs to another user.' });
+    }
+  } catch (err) {
+    console.warn('Project ownership check failed:', err.message);
+  }
+  return next();
+});
+
+// The same idea for assets addressed by id: /api/assets/<digits>/... covers
+// tags, the paint document, thumbnails and the version/edit/replace ingest
+// endpoints in one place.
+app.use(async (req, res, next) => {
+  if (!req.user) return next();
+
+  const fromPath = /^\/api\/assets\/(\d+)(?:\/|$)/.exec(req.path)?.[1];
+  if (!fromPath) return next();
+
+  try {
+    const owner = await getAssetOwnerId(Number(fromPath));
+    // undefined means no such asset -- left to the route, which knows whether
+    // that is a 404 or harmless.
+    if (owner !== undefined && !mayUse(owner, req)) {
+      return res.status(403).json({ error: 'This asset belongs to another user.' });
+    }
+  } catch (err) {
+    console.warn('Asset ownership check failed:', err.message);
+  }
+  return next();
+});
+
 app.use('/assets', express.static(ASSETS_DIR));
 app.use('/wiki-media', express.static(WIKI_MEDIA_DIR));
 
@@ -574,9 +630,94 @@ app.put('/api/assets/library/edits', async (req, res) => {
   }
 });
 
+// --- ownership -----------------------------------------------------------
+// On a shared server, projects and assets belong to the user who made them and
+// nobody sees anyone else's. Two cases see everything, and both are expressed
+// as "no viewer to scope to":
+//
+//   * a desktop install -- there are no accounts, so req.user is undefined and
+//     every listing behaves exactly as it did before this existed;
+//   * an administrator.
+//
+// Unowned rows (ownerId NULL) stay visible to everyone: they were written
+// before ownership existed and belong to no one to hide them from.
+
+// The signed-in user, or null when there is none.
+function viewerId(req) {
+  const id = Number(req.user?.id);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+// Who to scope a LISTING to -- null means "show everything".
+function scopeId(req) {
+  return req.user?.role === 'admin' ? null : viewerId(req);
+}
+
+// Whether the caller may touch one record, given its owner.
+function mayUse(ownerId, req) {
+  const owner = ownerId ?? null;
+  if (owner === null) return true;
+  if (req.user?.role === 'admin') return true;
+  return Number(owner) === viewerId(req);
+}
+
+function mayUseWorkflow(record, req) {
+  return mayUse(record?.ownerId, req);
+}
+
+const NOT_YOURS = 'This belongs to another user.';
+
+// The middleware pair above cannot see a MULTIPART body: multer parses it
+// inside the route, long after they run, so a projectId or assetId sent as a
+// form field is invisible to them. Those routes call these two helpers
+// themselves, immediately after multer. (This is the same body-timing trap that
+// once filed uploaded assets under the wrong type.)
+async function requireAssetAccess(req, res, assetId) {
+  const owner = await getAssetOwnerId(Number(assetId));
+  if (owner === undefined) return true;          // no such asset: the route reports it
+  if (mayUse(owner, req)) return true;
+  res.status(403).json({ error: 'This asset belongs to another user.' });
+  return false;
+}
+
+async function requireProjectAccess(req, res, projectId) {
+  const id = Number(projectId);
+  if (!Number.isFinite(id) || id <= 0) return true;
+  const project = await getProjectById(id);
+  if (!project) return true;                     // the route decides what a missing project means
+  if (mayUse(project.ownerId, req)) return true;
+  res.status(403).json({ error: 'This project belongs to another user.' });
+  return false;
+}
+
+// Ownership for an asset addressed by its stored path instead of its id.
+async function mayUseAssetByFilePath(type, filePath, req) {
+  if (!req.user) return true;
+  const existing = await findAssetByFilePath(type, filePath);
+  if (!existing) return true;   // nothing there; the route reports it
+  return mayUse(await getAssetOwnerId(Number(existing.id)), req);
+}
+
+// Resolve a project and refuse it if it is not the caller's. Returns the
+// project, or null once it has already answered the request -- so callers read
+// as `const project = await requireProject(...); if (!project) return;`
+async function requireProject(req, res, projectId) {
+  const project = await getProjectById(Number(projectId));
+  if (!project) {
+    res.status(404).json({ error: 'Project not found' });
+    return null;
+  }
+  if (!mayUse(project.ownerId, req)) {
+    // 403 rather than 404: it exists, and "not found" reads as data loss.
+    res.status(403).json({ error: 'This project belongs to another user.' });
+    return null;
+  }
+  return project;
+}
+
 app.get('/api/library/comfy-workflows', async (req, res) => {
   try {
-    const workflowRecords = await listWorkflowRecords();
+    const workflowRecords = await listWorkflowRecords(viewerId(req));
     const workflows = (await Promise.all(workflowRecords.map(async record => {
       try {
         return await buildWorkflowResponse(record);
@@ -602,6 +743,13 @@ app.get('/api/library/comfy-workflows/:id', async (req, res) => {
   try {
     const record = await getWorkflowRecordById(Number(req.params.id));
     if (!record) return res.status(404).json({ error: 'ComfyUI workflow not found' });
+    if (!mayUseWorkflow(record, req)) {
+      // Not a 404: it does exist, and saying so is the difference between "your
+      // data is gone" and "that one belongs to a teammate".
+      return res.status(403).json({
+        error: 'This workflow belongs to another user. Import your own copy to run it.'
+      });
+    }
     res.json(await buildWorkflowResponse(record));
   } catch (err) {
     console.error('Failed to read the ComfyUI workflow:', err);
@@ -671,7 +819,8 @@ app.post('/api/library/comfy-workflows', async (req, res) => {
       name: sanitizeDisplayName(name, 'Workflow'),
       filePath,
       parameters: selectedParameters,
-      outputs: selectedOutputs
+      outputs: selectedOutputs,
+      ownerId: viewerId(req)
     });
 
     res.status(201).json(await buildWorkflowResponse(workflowRecord));
@@ -688,6 +837,9 @@ app.put('/api/library/comfy-workflows/:id', async (req, res) => {
 
     if (!existingWorkflowRecord) {
       return res.status(404).json({ error: 'ComfyUI workflow not found' });
+    }
+    if (!mayUseWorkflow(existingWorkflowRecord, req)) {
+      return res.status(403).json({ error: 'This workflow belongs to another user.' });
     }
 
     const existingWorkflow = await buildWorkflowResponse(existingWorkflowRecord);
@@ -3758,7 +3910,7 @@ async function saveWorkflowFile(name, workflowJson) {
 
 app.get('/api/projects', async (req, res) => {
   try {
-    res.json(await listProjects());
+    res.json(await listProjects(scopeId(req)));
   } catch {
     res.status(500).json({ error: 'Server read error' });
   }
@@ -5396,7 +5548,7 @@ app.post('/api/meshes/rigging', async (req, res) => {
 
 app.post('/api/projects', async (req, res) => {
   try {
-    res.status(201).json(await createProject(req.body));
+    res.status(201).json(await createProject({ ...req.body, ownerId: viewerId(req) }));
   } catch {
     res.status(500).json({ error: 'Failed to create project' });
   }
@@ -5404,8 +5556,8 @@ app.post('/api/projects', async (req, res) => {
 
 app.get('/api/projects/:id', async (req, res) => {
   try {
-    const project = await getProjectById(Number(req.params.id));
-    if (!project) return res.status(404).json({ error: 'Project not found' });
+    const project = await requireProject(req, res, req.params.id);
+    if (!project) return;
     res.json(project);
   } catch {
     res.status(500).json({ error: 'Server error' });
@@ -5723,10 +5875,12 @@ app.post('/api/projects/import', async (req, res) => {
 
 app.get('/api/assets', async (req, res) => {
   const { projectId, includeChildren } = req.query;
+  if (projectId && !(await requireProject(req, res, projectId))) return;
   // includeChildren returns every project-linked edit/version as a row of its
   // own, on top of the copies nested in each root's `children` array.
   res.json(await listProjectAssets(projectId ? Number(projectId) : null, {
-    includeChildren: String(includeChildren || '').toLowerCase() === 'true'
+    includeChildren: String(includeChildren || '').toLowerCase() === 'true',
+    viewerId: scopeId(req)
   }));
 });
 
@@ -6020,10 +6174,11 @@ app.delete('/api/boards/:id', async (req, res) => {
 
 app.get('/api/assets/library', async (req, res) => {
   try {
+    const scope = scopeId(req);
     const [images, meshes, brushes] = await Promise.all([
-      listLibraryAssetsByType('image', getRequestBaseUrl(req)),
-      listLibraryAssetsByType('mesh', getRequestBaseUrl(req)),
-      listLibraryAssetsByType('brush', getRequestBaseUrl(req))
+      listLibraryAssetsByType('image', getRequestBaseUrl(req), scope),
+      listLibraryAssetsByType('mesh', getRequestBaseUrl(req), scope),
+      listLibraryAssetsByType('brush', getRequestBaseUrl(req), scope)
     ]);
     res.json({ images, meshes, brushes });
   } catch (err) {
@@ -6038,6 +6193,14 @@ app.delete('/api/assets/library', async (req, res) => {
 
     if (!type || !filename) {
       return res.status(400).json({ error: 'type and filename are required' });
+    }
+
+    // A library asset is addressed by stored path rather than id, so the id
+    // middleware above cannot see it. This is also what stops the setup
+    // wizard's overwrite -- which deletes by name before reinstalling -- from
+    // clearing a teammate's workflow that shares a template name.
+    if (!(await mayUseAssetByFilePath(String(type), String(filename), req))) {
+      return res.status(403).json({ error: NOT_YOURS });
     }
 
     const result = await deleteLibraryAssetByFilePath(String(type), String(filename), {
@@ -6092,7 +6255,7 @@ app.put('/api/assets/library', async (req, res) => {
 app.get('/api/assets/tags', async (req, res) => {
   try {
     const { type } = req.query;
-    res.json({ tags: await listAllAssetTags({ type: type ? String(type) : null }) });
+    res.json({ tags: await listAllAssetTags({ type: type ? String(type) : null, viewerId: scopeId(req) }) });
   } catch (err) {
     console.error('Failed to list asset tags:', err);
     res.status(500).json({ error: 'Failed to list asset tags' });
@@ -6209,7 +6372,8 @@ app.get('/api/assets/by-tags', async (req, res) => {
       matchAll: String(matchAll ?? 'true') !== 'false',
       type: type ? String(type) : null,
       projectId: projectId !== undefined && projectId !== '' ? Number(projectId) : null,
-      limit: limit !== undefined ? Number(limit) : 200
+      limit: limit !== undefined ? Number(limit) : 200,
+      viewerId: scopeId(req)
     });
 
     res.json({ assets });
@@ -6292,7 +6456,8 @@ app.post('/api/assets/library/import', libraryImportUpload.any(), async (req, re
           resolution: (assetType === 'image' || assetType === 'brush') ? formatImageResolution(dimensions.width, dimensions.height) : 'Unknown',
           source: 'LIBRARY IMPORT'
         },
-        createdAt: Date.now()
+        createdAt: Date.now(),
+        ownerId: viewerId(req)
       });
 
       imported.push({
@@ -6329,6 +6494,8 @@ app.post('/api/assets/library/brush-edits', libraryImportUpload.any(), async (re
     if (!parentId || isNaN(parentId)) {
       return res.status(400).json({ error: 'parentId is required and must be a valid asset id' });
     }
+    // Multipart body -- see requireAssetAccess.
+    if (!(await requireAssetAccess(req, res, parentId))) return;
 
     const files = (req.files || []).filter(f => f.fieldname === 'files');
     if (files.length === 0) {
@@ -6547,6 +6714,10 @@ app.post('/api/assets/upload', upload.single('file'), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'No file provided' });
     // Safe to read req.body.type now: multer has parsed the whole body, so the
     // type no longer depends on the order the client sent its fields in.
+    // Checked here rather than in the middleware: projectId arrives as a
+    // multipart field, which is only parsed once multer has run.
+    if (!(await requireProjectAccess(req, res, req.body.projectId))) return;
+
     const assetType = req.body.type || inferAssetTypeFromFilename(req.file.originalname);
     await commitStagedUpload(req.file, assetType);
     const inputMetadata = req.body.metadata ? JSON.parse(req.body.metadata) : {};
@@ -6555,6 +6726,7 @@ app.post('/api/assets/upload', upload.single('file'), async (req, res) => {
       : { width: 0, height: 0 };
     const newAsset = await createProjectAsset({
       projectId: Number(req.body.projectId),
+      ownerId: viewerId(req),
       type: assetType,
       name: req.body.name || req.file.originalname,
       filePath: toStoredAssetPath(assetType, req.file.filename),
@@ -6636,6 +6808,10 @@ app.get('/api/assets/record', async (req, res) => {
       : (filePath ? await findAssetByFilePath(String(type), String(filePath)) : null);
 
     if (!record) return res.status(404).json({ error: 'Asset not found' });
+    // Addressed by query rather than path, so the id middleware never saw it.
+    if (!mayUse(await getAssetOwnerId(Number(record.id)), req)) {
+      return res.status(403).json({ error: NOT_YOURS });
+    }
     res.json(record);
   } catch (err) {
     console.error('Failed to read the asset record:', err);
@@ -7980,6 +8156,9 @@ app.post('/api/assets/image-editor/save', multer({ storage: multer.memoryStorage
       return res.status(400).json({ error: 'saveMode must be replace or version' });
     }
 
+    // Multipart body -- see requireAssetAccess.
+    if (!(await requireAssetAccess(req, res, assetId))) return;
+
     const sourceAsset = await getAssetRecordById(Number(assetId));
     if (!sourceAsset) {
       return res.status(404).json({ error: 'Image asset not found' });
@@ -8109,6 +8288,7 @@ app.post('/api/assets/link', async (req, res) => {
     const libraryAsset = await findLibraryAssetByFilePath(assetType, storedFilePath);
     const newAsset = await createProjectAsset({
       projectId: Number(projectId),
+      ownerId: viewerId(req),
       type: assetType,
       name: name || path.basename(storedFilePath),
       filePath: storedFilePath,
@@ -9269,26 +9449,7 @@ async function runSetupDownloads(jobId, comfyPath, files, modelsPath) {
   });
 }
 
-async function deleteExistingWorkflowsByName(name) {
-  const normalizedName = sanitizeDisplayName(name, 'Workflow');
-  // Operates on whichever library the install writes to, so an overwrite does
-  // not delete locally while creating remotely.
-  const records = await listWorkflows();
-  let deleted = 0;
-  for (const record of records) {
-    if (sanitizeDisplayName(record.name, 'Workflow') === normalizedName) {
-      try {
-        await deleteWorkflowByFilePath(record.filePath);
-        deleted += 1;
-      } catch (err) {
-        console.warn(`[setup] failed to delete existing workflow ${record.name}:`, err.message);
-      }
-    }
-  }
-  return deleted;
-}
-
-async function installSetupWorkflow(workflowConfig, diffusionModelFileName = '') {
+async function installSetupWorkflow(workflowConfig, diffusionModelFileName = '', existingId = null) {
   if (!workflowConfig?.File) {
     throw new Error('Workflow configuration is missing a File path');
   }
@@ -9339,13 +9500,41 @@ async function installSetupWorkflow(workflowConfig, diffusionModelFileName = '')
     throw new Error(`Workflow "${workflowConfig.Name}" has no outputs configured`);
   }
 
-  // Installs into the shared library when this install is connected to a
-  // server: a bundled template written only to the local database would carry
-  // an id no teammate could resolve, which is exactly what shared definitions
-  // exist to prevent.
+  const displayName = sanitizeDisplayName(workflowConfig.Name, 'Workflow');
+
+  // Overwriting an existing install UPDATES it rather than replacing it, so the
+  // id survives. Graph nodes, Batch stages and Kanban cards all store that id:
+  // a delete-and-recreate turned every one of them into a dangling reference
+  // that only failed when the user next hit Run.
+  if (existingId) {
+    return await updateWorkflow(
+      existingId,
+      { name: displayName, workflowJson, parameters, outputs },
+      async () => {
+        // Remember the graph file the record points at before repointing it, or
+        // every reinstall leaves its predecessor behind. (The remote path does
+        // this in the PUT route.)
+        const previous = await getWorkflowRecordById(existingId);
+        const filePath = await saveWorkflowFile(workflowConfig.Name, workflowJson);
+        const record = await updateWorkflowRecord(existingId, { name: displayName, parameters, outputs, filePath });
+
+        if (previous?.filePath && previous.filePath !== filePath) {
+          try {
+            await fs.unlink(toAbsoluteStoragePath(previous.filePath));
+          } catch (cleanupErr) {
+            console.warn('[setup] failed to remove the superseded workflow file:', cleanupErr.message);
+          }
+        }
+        return record;
+      }
+    );
+  }
+
+  // Installs into the library on the shared server when this install is
+  // connected to one, so the workflow follows the user to any machine.
   return await createWorkflow(
     {
-      name: sanitizeDisplayName(workflowConfig.Name, 'Workflow'),
+      name: displayName,
       workflowJson,
       parameters,
       outputs
@@ -9353,7 +9542,7 @@ async function installSetupWorkflow(workflowConfig, diffusionModelFileName = '')
     async () => {
       const filePath = await saveWorkflowFile(workflowConfig.Name, workflowJson);
       return await createWorkflowRecord({
-        name: sanitizeDisplayName(workflowConfig.Name, 'Workflow'),
+        name: displayName,
         filePath,
         parameters,
         outputs
@@ -9609,12 +9798,14 @@ app.post('/api/setup/install-workflows', async (req, res) => {
       }
 
       try {
-        if (existing && overwrite) {
-          await deleteExistingWorkflowsByName(normalizedName);
-          existingByName.delete(normalizedName);
-        }
-
-        const record = await installSetupWorkflow(workflowConfig, diffusionFileName);
+        // Deliberately NOT a delete-then-create: overwriting reuses the record
+        // so its id -- which every saved node and Batch stage points at --
+        // survives the reinstall.
+        const record = await installSetupWorkflow(
+          workflowConfig,
+          diffusionFileName,
+          existing && overwrite ? existing.id : null
+        );
         existingByName.set(normalizedName, record);
         installed.push({ id: record.id, name: record.name, overwritten: Boolean(existing) });
       } catch (err) {
