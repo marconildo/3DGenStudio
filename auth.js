@@ -14,6 +14,7 @@ import { promisify } from 'node:util';
 // server.js — the lint config does not assume Node globals.
 import { Buffer } from 'node:buffer';
 import process from 'node:process';
+import { isUserAssetPath } from './serverMode.js';
 import {
   countUsers,
   createUser,
@@ -110,9 +111,16 @@ const PUBLIC_PATHS = new Set(['/api/health', '/api/auth/login', '/api/auth/boots
 // deliberately NOT gated: a browser has to be able to load the app in order to
 // render the login form at all. Asset bytes ARE gated, which is why the cookie
 // leg in readToken() exists.
-const PROTECTED_PREFIXES = ['/api', '/assets', '/wiki-media'];
+//
+// '/assets' is NOT in this list, even though asset bytes live under it, because
+// so does the frontend's own bundle (dist/assets/index-<hash>.js). Gating the
+// whole prefix answered 401 for the JavaScript that draws the login form — a
+// deadlock, and a blank page with no way in. isUserAssetPath() knows the eight
+// real asset subdirectories; see USER_ASSET_PREFIXES in serverMode.js.
+const PROTECTED_PREFIXES = ['/api', '/wiki-media'];
 
 function isProtectedPath(pathname) {
+  if (isUserAssetPath(pathname)) return true;
   return PROTECTED_PREFIXES.some(prefix => pathname === prefix || pathname.startsWith(`${prefix}/`));
 }
 

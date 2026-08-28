@@ -3,6 +3,8 @@ import { ProjectProvider } from './context/ProjectContext'
 import { SettingsProvider } from './context/SettingsContext'
 import { NotificationProvider } from './context/NotificationContext'
 import { RemoteProvider } from './context/RemoteContext'
+import { ServerSessionProvider } from './context/ServerSessionContext'
+import ServerLoginPage from './components/ServerLoginPage'
 import { WorkflowJobsProvider } from './context/WorkflowJobsContext'
 import { BatchRunProvider } from './context/BatchRunContext'
 import ProjectsPage from './pages/ProjectsPage'
@@ -35,19 +37,26 @@ function AppRoutes() {
 export default function App() {
   return (
     <NotificationProvider>
-      {/* Above the data providers: it is pure connection status with no
-          dependencies, and both the banner and the Server settings tab read it. */}
-      <RemoteProvider>
-        <SettingsProvider>
-          <ProjectProvider>
-            <WorkflowJobsProvider>
-              <BatchRunProvider>
-                <AppRoutes />
-              </BatchRunProvider>
-            </WorkflowJobsProvider>
-          </ProjectProvider>
-        </SettingsProvider>
-      </RemoteProvider>
+      {/* Outermost of the data-aware providers, because when this build is being
+          served BY a shared server nothing below it may run until someone has
+          signed in — every provider under it would otherwise open with a round
+          of 401s. Inert on a desktop install: it asks /api/health once, sees
+          mode 'local', and renders its children unchanged. */}
+      <ServerSessionProvider renderLogin={({ signIn }) => <ServerLoginPage signIn={signIn} />}>
+        {/* Pure connection status with no dependencies, and both the banner and
+            the Server settings tab read it. */}
+        <RemoteProvider>
+          <SettingsProvider>
+            <ProjectProvider>
+              <WorkflowJobsProvider>
+                <BatchRunProvider>
+                  <AppRoutes />
+                </BatchRunProvider>
+              </WorkflowJobsProvider>
+            </ProjectProvider>
+          </SettingsProvider>
+        </RemoteProvider>
+      </ServerSessionProvider>
     </NotificationProvider>
   )
 }

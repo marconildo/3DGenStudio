@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { API_BASE } from '../config'
 import { useRemote } from '../context/RemoteContext.shared'
+import { useServerSession } from '../context/ServerSessionContext.shared'
 import './ServerSettingsTab.css'
 
 const ROLES = [
@@ -11,11 +12,25 @@ const ROLES = [
 
 // Settings → Server.
 //
+// Two different situations wear the same tab, and only one of them is about a
+// *connection*: a desktop install reaching out to a shared server, or a browser
+// already being served by one. Split into two components rather than branching
+// inside one, so neither ends up calling hooks conditionally.
+export default function ServerSettingsTab() {
+  const session = useServerSession()
+
+  // Browsing the shared server directly: there is nothing to configure, because
+  // this IS the server — and /api/remote does not even exist here.
+  return session.serverMode
+    ? <BrowserSessionSection session={session} />
+    : <RemoteConnectionSection />
+}
+
 // Connects this install to a shared 3D Gen Studio server. What stays local
 // matters as much as what moves: ComfyUI, the Python sidecars and every
 // third-party API key remain on this machine — only projects, assets and
 // workflow definitions live on the server.
-export default function ServerSettingsTab() {
+function RemoteConnectionSection() {
   const remote = useRemote()
 
   // null means "not edited yet", so the fields fall back to the stored
@@ -153,8 +168,61 @@ export default function ServerSettingsTab() {
   )
 }
 
+// Settings -> Server, as seen from a browser the shared server is serving.
+function BrowserSessionSection({ session }) {
+  const [busy, setBusy] = useState(false)
+  const role = session.role || 'user'
+
+  const handleSignOut = async () => {
+    setBusy(true)
+    // No finally-unsetting busy: signing out swaps this whole tree for the login
+    // screen, so re-enabling the button would only ever flicker on failure.
+    try {
+      await session.signOut()
+    } catch {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <>
+      <section className="settings-section">
+        <h3 className="settings-section-title font-label">Shared Server</h3>
+
+        <div className="settings-api-card">
+          <div className="settings-api-header">
+            <div className="settings-api-icon">
+              <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>dns</span>
+            </div>
+            <span className="settings-api-name">This Session</span>
+            <span className="server-dot server-dot--on" />
+          </div>
+
+          <p className="settings-helper-text">
+            You are browsing the shared server in a web browser. Generation, mesh tools
+            and ComfyUI need the desktop app — install it and connect it to this server
+            to create new assets.
+          </p>
+
+          <p className="server-status-line">
+            {`Signed in as ${session.user?.displayName || session.user?.login || 'unknown'} (${role})`}
+            {session.readOnly && ' — view only'}
+          </p>
+
+          <div className="server-actions">
+            <button className="server-btn" disabled={busy} onClick={handleSignOut}>SIGN OUT</button>
+          </div>
+        </div>
+      </section>
+
+      {role === 'admin' && <UserAdminSection />}
+    </>
+  )
+}
+
 // Administrators only. Reaches /api/users through this install's own backend,
-// which the gateway forwards to the server with the stored token.
+// which the gateway forwards to the server with the stored token — or, in a
+// browser served by the server itself, straight there with the session cookie.
 function UserAdminSection() {
   const [users, setUsers] = useState([])
   const [loading, setLoading] = useState(true)

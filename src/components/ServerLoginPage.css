@@ -1,0 +1,114 @@
+/* Sign-in screen for the browser UI served by a shared server. Stands in for the
+   entire app, so it owns the viewport rather than sitting inside a layout. */
+.server-login {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  background: var(--background);
+  color: var(--on-surface);
+}
+
+.server-login__card {
+  width: 100%;
+  max-width: 26rem;
+  display: flex;
+  flex-direction: column;
+  padding: 2rem;
+  border: 1px solid var(--outline-variant);
+  border-radius: 14px;
+  background: var(--surface-container);
+}
+
+.server-login__brand {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  margin-bottom: 1.25rem;
+}
+
+.server-login__icon {
+  font-size: 2rem;
+  color: var(--primary);
+  flex: 0 0 auto;
+}
+
+.server-login__title {
+  margin: 0;
+  font-size: 1.35rem;
+  line-height: 1.2;
+}
+
+.server-login__subtitle {
+  margin: 0.15rem 0 0;
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--primary);
+}
+
+.server-login__helper {
+  margin: 0 0 1.25rem;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--on-surface-variant);
+}
+
+/* Always in the flow, empty or not: appearing on failure would otherwise shift
+   the fields down under the pointer just as the user goes to retype. */
+.server-login__error {
+  min-height: 1.15rem;
+  margin: 0 0 0.75rem;
+  font-family: var(--font-label);
+  font-size: 0.8rem;
+  color: var(--error);
+}
+
+.server-login__label {
+  font-family: var(--font-label);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--on-surface-variant);
+  margin-bottom: 0.35rem;
+}
+
+.server-login__input {
+  margin-bottom: 1rem;
+  padding: 0.65rem 0.8rem;
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  color: var(--on-surface);
+  background: var(--surface-container-highest);
+  border: 1px solid var(--outline-variant);
+  border-radius: 8px;
+  outline: none;
+}
+
+.server-login__input:focus {
+  border-color: var(--primary);
+}
+
+.server-login__input:disabled {
+  opacity: 0.6;
+}
+
+.server-login__submit {
+  margin-top: 0.5rem;
+  padding: 0.7rem 1rem;
+  font-family: var(--font-label);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--on-primary);
+  background: var(--primary);
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.server-login__submit:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

@@ -66,6 +66,38 @@ const LOCAL_EXECUTION_DATA_PATTERNS = [
   /^\/api\/projects\/[^/]+\/export$/
 ];
 
+// The subdirectories of data/assets, as URL prefixes.
+//
+// Load-bearing in TWO places, because the URL prefix /assets serves two
+// completely unrelated things:
+//
+//   /assets/images/1787-42.png   -> data/assets/images/...  (a user asset)
+//   /assets/index-DJ9Bu3Jb.js    -> dist/assets/...         (the app's own bundle)
+//
+// Vite emits its build output flat under dist/assets and express.static serves
+// it on the same prefix, so anything that treats '/assets' as one thing gets one
+// of the two wrong — and it has already happened twice:
+//
+//   * the gateway forwarded all of /assets, sending the frontend's own
+//     JavaScript to the shared server (different build — 404, blank window);
+//   * the auth gate protected all of /assets, answering 401 for that same
+//     JavaScript. That one is worse than it looks: the login form IS the
+//     JavaScript, so it was a deadlock with no way in.
+//
+// User assets always sit in one of these subdirectories (see storage.js) and
+// Vite's output never does, so the split is unambiguous. Adding a new asset
+// subdirectory means adding it here.
+export const USER_ASSET_PREFIXES = [
+  '/assets/images',
+  '/assets/meshes',
+  '/assets/thumbnails',
+  '/assets/workflows',
+  '/assets/brushes',
+  '/assets/paintdocs',
+  '/assets/wiki',
+  '/assets/motions'
+];
+
 // Everything the shared server owns. Forwarded verbatim by the gateway when a
 // remote is configured. /api/health is deliberately absent: a local install
 // answers for its own liveness, not the remote's.
@@ -85,26 +117,9 @@ const REMOTE_DATA_PREFIXES = [
   '/api/users',
   '/wiki-media',
 
-  // Asset bytes, listed as individual subdirectories rather than a blanket
-  // '/assets'. The URL prefix is shared by two completely different things:
-  //
-  //   /assets/images/1787-42.png   -> data/assets/images/...  (a user asset)
-  //   /assets/index-DJ9Bu3Jb.js    -> dist/assets/...         (the app's own bundle)
-  //
-  // Vite emits its build output flat under dist/assets, and express.static
-  // serves it on the same prefix. Forwarding the whole prefix sent the
-  // frontend's own JavaScript to the shared server, which has a different
-  // build and answered 404 — a blank app window. User assets always sit in one
-  // of these subdirectories (see storage.js), and Vite's output never does, so
-  // the split is unambiguous.
-  '/assets/images',
-  '/assets/meshes',
-  '/assets/thumbnails',
-  '/assets/workflows',
-  '/assets/brushes',
-  '/assets/paintdocs',
-  '/assets/wiki',
-  '/assets/motions'
+  // Asset bytes. See USER_ASSET_PREFIXES above for why this is eight entries
+  // and not a blanket '/assets'.
+  ...USER_ASSET_PREFIXES
 ];
 
 function matchesPrefix(pathname, prefixes) {
@@ -119,6 +134,11 @@ export function isLocalOnlyPath(pathname) {
   const normalized = normalize(pathname);
   if (LOCAL_ONLY_EXACT.has(normalized)) return true;
   return matchesPrefix(normalized, LOCAL_ONLY_PREFIXES);
+}
+
+// Asset BYTES, as opposed to the frontend bundle that shares the prefix.
+export function isUserAssetPath(pathname) {
+  return matchesPrefix(normalize(pathname), USER_ASSET_PREFIXES);
 }
 
 export function isLocalExecutionDataPath(pathname) {
