@@ -28,6 +28,8 @@ export default function AutoRigToolsPanel({
   hasSkeleton,
   showSkeleton,
   onToggleSkeleton,
+  showBoneNames,
+  onToggleBoneNames,
   rigPreserved,
   rigBoneCount,
   rigDropped,
@@ -51,6 +53,23 @@ export default function AutoRigToolsPanel({
             ? 'Overlay the skeleton (bones) on the mesh in the viewport'
             : 'No skeleton yet — rig the mesh (or load an already-rigged one) to see its bones'}
         />
+        {/* Only meaningful once there is a rig to name, so it appears with one.
+            Follows the skeleton overlay: the labels ride on it, so with the
+            skeleton hidden there is nothing for them to sit on. */}
+        {hasSkeleton && (
+          <button
+            type="button"
+            className="mesh-editor-btn"
+            onClick={() => onToggleBoneNames(!showBoneNames)}
+            disabled={!showSkeleton}
+            title={showSkeleton
+              ? 'Show or hide the name of every bone in the viewport'
+              : 'Turn the skeleton overlay on first — the labels are drawn on its joints'}
+          >
+            <span className="material-symbols-outlined">{showBoneNames ? 'label_off' : 'label'}</span>
+            <span>{showBoneNames ? 'Hide Bone Names' : 'Show Bone Names'}</span>
+          </button>
+        )}
         {!hasSkeleton && (
           <span className="mesh-editor-panel__hint">This mesh has no skeleton yet. Run Auto Rig to generate one.</span>
         )}

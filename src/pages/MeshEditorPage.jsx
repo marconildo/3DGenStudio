@@ -483,6 +483,10 @@ export default function MeshEditorPage() {
   // or of the freshly-generated rig result. `showSkeleton` toggles its visibility.
   const [skeleton, setSkeleton] = useState(null)
   const [showSkeleton, setShowSkeleton] = useState(true)
+  // Label every joint in the viewport, not just the selected one. Off by default:
+  // on a dense rig the labels cover the mesh, so it is a look-up mode you turn on
+  // to read the naming convention, not a permanent overlay.
+  const [showBoneNames, setShowBoneNames] = useState(false)
   // The real rig (bones + inverse bind matrices), kept out of React state
   // because it is a scene graph that never re-renders. `rigDropped` records that
   // an edit destroyed the per-vertex weights, so saving can no longer carry it.
@@ -9034,6 +9038,8 @@ export default function MeshEditorPage() {
                     hasSkeleton: !!skeleton,
                     showSkeleton,
                     onToggleSkeleton: setShowSkeleton,
+                    showBoneNames,
+                    onToggleBoneNames: setShowBoneNames,
                     rigPreserved: !!rigRef.current && geometryHasSkin(geometry),
                     rigBoneCount: rigRef.current?.boneCount || 0,
                     rigDropped,
@@ -9287,7 +9293,12 @@ export default function MeshEditorPage() {
                           </mesh>
                         </group>
                       )}
-                      <SkeletonOverlay skeleton={skeleton} visible={showSkeleton && !animPreview} selectedBone={selectedBone} />
+                      <SkeletonOverlay
+                        skeleton={skeleton}
+                        visible={showSkeleton && !animPreview}
+                        selectedBone={selectedBone}
+                        showNames={showBoneNames}
+                      />
                       {/* The animated counterpart. A SIBLING of AnimatedMeshPreview, never
                           a child: the preview wraps its scene in the floor-offset group,
                           and this reads world positions that already include it. */}
@@ -9308,6 +9319,7 @@ export default function MeshEditorPage() {
                           root={animPreview.scene}
                           skinnedMesh={animPreview.skinnedMesh}
                           visible={showSkeleton}
+                          showNames={showBoneNames}
                           // `selectedBone` first: it is what the last click set, dock
                           // included, so clicking a bone the clip does not animate (a
                           // finger) highlights THAT bone instead of leaving the marker

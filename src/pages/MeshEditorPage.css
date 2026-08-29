@@ -916,6 +916,20 @@
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
 }
 
+/* Every-joint variant ("Show Bone Names"): quieter than the selected-bone label,
+   because dozens of them are on screen at once and the selection must still read
+   as the highlighted one. */
+.mesh-editor-bone-label--muted {
+  transform: translateY(-130%);
+  padding: 0.1rem 0.35rem;
+  background: rgba(16, 17, 20, 0.78);
+  border-color: rgba(240, 145, 60, 0.45);
+  color: #ffd9a0;
+  font-size: 0.64rem;
+  font-weight: 500;
+  box-shadow: none;
+}
+
 /* ---- Animations tab ---- */
 .mesh-editor-anim__controls {
   display: flex;

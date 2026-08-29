@@ -28,10 +28,13 @@ export default function AnimatedSkeletonOverlay({
   skinnedMesh,        // the SkinnedMesh whose skeleton is being played
   visible = true,
   selectedName = null,
+  showNames = false,   // label every joint, not just the selected one
   onJoints = null,    // (names, positions) — same arrays each frame, read synchronously
 }) {
   const markerRef = useRef(null)
   const labelRef = useRef(null)
+  // One group per bone label, written in place every frame like the buffers above.
+  const nameRefs = useRef([])
   const onJointsRef = useRef(onJoints)
   useEffect(() => { onJointsRef.current = onJoints }, [onJoints])
 
@@ -126,6 +129,14 @@ export default function AnimatedSkeletonOverlay({
       labelRef.current?.position.set(positions[o], positions[o + 1], positions[o + 2])
     }
 
+    if (showNames) {
+      const groups = nameRefs.current
+      for (let i = 0; i < bones.length; i++) {
+        const o = i * 3
+        groups[i]?.position.set(positions[o], positions[o + 1], positions[o + 2])
+      }
+    }
+
     onJointsRef.current?.(f.names, positions)
   })
 
@@ -150,6 +161,15 @@ export default function AnimatedSkeletonOverlay({
           />
         </points>
       )}
+      {showNames && rig.names.map((name, i) => (
+        i === selectedIndex ? null : (
+          <group key={i} ref={el => { nameRefs.current[i] = el }}>
+            <Html center zIndexRange={[19, 0]} className="mesh-editor-bone-label__anchor">
+              <div className="mesh-editor-bone-label mesh-editor-bone-label--muted">{name}</div>
+            </Html>
+          </group>
+        )
+      ))}
       {selectedIndex >= 0 && (
         <>
           <mesh ref={markerRef} renderOrder={42}>

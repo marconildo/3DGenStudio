@@ -5,7 +5,9 @@
 //
 // When a bone is selected (from the Skeleton tree or by clicking it on the mesh)
 // it is highlighted with a bright marker and a small floating name label that
-// tracks the joint as the camera orbits.
+// tracks the joint as the camera orbits. `showNames` labels EVERY joint the same
+// way (Auto Rig -> "Show bone names"), for reading a whole naming convention at a
+// glance instead of clicking bones one by one.
 import { useEffect, useMemo } from 'react'
 import { Html } from '@react-three/drei'
 import * as THREE from 'three'
@@ -16,7 +18,7 @@ export const BONE_COLOR = '#f0913c'
 export const JOINT_COLOR = '#ffd9a0'
 export const SELECTED_COLOR = '#8ff5ff'
 
-export default function SkeletonOverlay({ skeleton, visible = true, selectedBone = null }) {
+export default function SkeletonOverlay({ skeleton, visible = true, selectedBone = null, showNames = false }) {
   const lineGeometry = useMemo(() => {
     if (!skeleton?.segments?.length) return null
     const geo = new THREE.BufferGeometry()
@@ -49,6 +51,23 @@ export default function SkeletonOverlay({ skeleton, visible = true, selectedBone
       name: skeleton.names?.[i] || `bone_${i}`,
     }
   }, [selectedBone, skeleton])
+
+  // Every other joint's label. The selected one is skipped — it already gets the
+  // brighter label under its marker, and two labels on one joint just overlap.
+  const labels = useMemo(() => {
+    if (!showNames || !skeleton?.joints?.length) return null
+    const out = []
+    const count = Math.floor(skeleton.joints.length / 3)
+    for (let i = 0; i < count; i++) {
+      if (i === selectedBone) continue
+      out.push({
+        index: i,
+        position: [skeleton.joints[i * 3], skeleton.joints[i * 3 + 1], skeleton.joints[i * 3 + 2]],
+        name: skeleton.names?.[i] || `bone_${i}`,
+      })
+    }
+    return out
+  }, [showNames, skeleton, selectedBone])
 
   useEffect(() => () => {
     lineGeometry?.dispose()
@@ -83,6 +102,17 @@ export default function SkeletonOverlay({ skeleton, visible = true, selectedBone
           />
         </points>
       )}
+      {labels?.map(label => (
+        <Html
+          key={label.index}
+          position={label.position}
+          center
+          zIndexRange={[19, 0]}
+          className="mesh-editor-bone-label__anchor"
+        >
+          <div className="mesh-editor-bone-label mesh-editor-bone-label--muted">{label.name}</div>
+        </Html>
+      ))}
       {selected && (
         <group position={selected.position} renderOrder={42}>
           <mesh renderOrder={42}>
