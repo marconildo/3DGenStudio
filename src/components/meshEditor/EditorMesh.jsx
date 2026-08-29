@@ -36,10 +36,24 @@ export default function EditorMesh({
         castShadow={showShadows}
         receiveShadow={showShadows}
       >
+        {/* Each branch carries a `key`. Without one React sees the same
+            `meshStandardMaterial` element in the same slot and UPDATES the live
+            material instead of building a new one — which silently breaks
+            `vertexColors`, because that is a shader-compile flag and assigning
+            it to an already-compiled material does nothing without
+            `needsUpdate`. The weight heatmap rendered as a plain white mesh
+            until these keys existed. */}
         {displayMode === 'albedo' ? (
-          <meshBasicMaterial color="#d5d5d5" />
+          <meshBasicMaterial key="albedo" color="#d5d5d5" />
+        ) : displayMode === 'weights' ? (
+          // Weight-paint heatmap: the ramp arrives as a `color` attribute on a
+          // display-only geometry (see weightPaintGeometry in MeshEditorPage).
+          // Lit, so the form still reads, but rough and non-metallic so the
+          // colour shown is as close to the stored weight as shading allows.
+          <meshStandardMaterial key="weights" vertexColors color="#ffffff" roughness={0.95} metalness={0} />
         ) : displayMode === 'sculpt' ? (
           <meshStandardMaterial
+            key="sculpt"
             color="#8b8b8b"
             roughness={0.82}
             metalness={0}
@@ -47,6 +61,7 @@ export default function EditorMesh({
           />
         ) : (
           <meshStandardMaterial
+            key="pbr"
             color="#cfd8ff"
             metalness={0.08}
             roughness={0.62}

@@ -12,6 +12,7 @@
 // textured mesh — where the generated file is the only copy of the rig.
 import { RangeField, ToggleField, SelectField } from './MeshToolField'
 import MeshToolProgress from './MeshToolProgress'
+import WeightPaintSection from './WeightPaintSection'
 import { AUTO_RIG_BONE_NAME_OPTIONS } from '../../utils/meshTools'
 
 export default function AutoRigToolsPanel({
@@ -34,6 +35,7 @@ export default function AutoRigToolsPanel({
   rigBoneCount,
   rigDropped,
   rigEdited,
+  weightPaint,
   disabled,
 }) {
   const o = options
@@ -83,13 +85,13 @@ export default function AutoRigToolsPanel({
             <span>Rig preserved — saving keeps the skeleton and {rigBoneCount} bones&apos; skin weights.</span>
           </div>
         )}
-        {/* Bone edits live in memory until something writes the mesh out, and the
-            skeleton looks identical at rest — so say so here rather than let the
-            corrections be lost to a page away. */}
+        {/* Bone and weight edits live in memory until something writes the mesh
+            out, and both look identical at rest — so say so here rather than let
+            the corrections be lost to a page away. */}
         {rigEdited && (
           <div className="mesh-editor-panel__hint" style={{ display: 'flex', alignItems: 'center', gap: '0.4em', color: '#8ff5ff' }}>
             <span className="material-symbols-outlined" style={{ fontSize: '1.1em' }}>edit</span>
-            <span>Skeleton edited by hand — save the mesh (or a new version) to keep the changes.</span>
+            <span>Rig edited by hand — save the mesh (or a new version) to keep the bone and weight changes.</span>
           </div>
         )}
         {rigDropped && (
@@ -181,6 +183,8 @@ export default function AutoRigToolsPanel({
           </div>
         )}
       </div>
+
+      <WeightPaintSection {...weightPaint} />
 
       <div className="mesh-editor-panel__section">
         <span className="mesh-editor-panel__section-title">Skeleton</span>

@@ -426,6 +426,64 @@
   border-color: #ac89ff;
 }
 
+.mesh-editor-weight-cursor {
+  border-color: #8ff5ff;
+}
+
+/* Weight painting: the four brush buttons, the active-bone readout and the
+   value legend. All three sit inside a normal panel section. */
+.mesh-editor-weight-modes {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.35rem;
+}
+
+.mesh-editor-weight-bone {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  font-size: 0.78rem;
+  color: var(--on-surface-variant);
+}
+
+.mesh-editor-weight-bone .material-symbols-outlined {
+  font-size: 1.1em;
+  color: #8ff5ff;
+}
+
+.mesh-editor-weight-bone strong {
+  color: var(--on-surface);
+}
+
+.mesh-editor-weight-bone--empty .material-symbols-outlined {
+  color: #e0a030;
+}
+
+.mesh-editor-weight-bone__share {
+  opacity: 0.75;
+}
+
+.mesh-editor-weight-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+/* Matches weightRamp() in utils/meshWeightPaint.js — if one changes the other
+   has to, or the legend stops describing the mesh. */
+.mesh-editor-weight-legend__ramp {
+  height: 8px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #0000ff 0%, #00ffff 25%, #00ff00 50%, #ffff00 75%, #ff0000 100%);
+}
+
+.mesh-editor-weight-legend__labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.68rem;
+  color: var(--on-surface-variant);
+}
+
 /* Veil shown while a released projection mask stroke (or a Clear/Fill) is being
    applied. The pulsing is a compositor-accelerated animation so it keeps running
    smoothly even while the (brief) synchronous compose blocks the main thread. It

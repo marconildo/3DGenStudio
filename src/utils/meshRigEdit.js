@@ -363,6 +363,24 @@ export function takeWeightsFromParent(rig, geometry, index, { band = 0.35 } = {}
 
 // ── Influence ───────────────────────────────────────────────────────────────
 
+// overlay index → skeleton index (-1 for a bone the skinned skeleton does not
+// hold). The one bridge between the two spaces described at the top of this
+// file; everything that reads or writes `skinIndex` from a UI selection has to
+// cross it, so it lives in exactly one place.
+export function rigSkeletonIndices(rig) {
+  const scene = rig?.rigScene
+  if (!scene) return new Int32Array(0)
+  const bones = collectSkeletonBones(scene)
+  const skeleton = collectSkinnedMeshes(scene)[0]?.skeleton
+  const skelIndexOf = new Map((skeleton?.bones || []).map((bone, i) => [bone, i]))
+  const out = new Int32Array(bones.length).fill(-1)
+  bones.forEach((bone, overlay) => {
+    const skel = skelIndexOf.get(bone)
+    if (skel != null) out[overlay] = skel
+  })
+  return out
+}
+
 // Per-bone skin influence in OVERLAY order: how many vertices each bone moves
 // and what share of the total weight it carries. This is what makes deleting a
 // bone a decision rather than a gamble — a bone at 0% moves nothing.
@@ -379,15 +397,12 @@ export function computeRigInfluence(rig, geometry) {
     return { counts, weights, total: 0, hasSkin: false }
   }
 
-  const skeleton = collectSkinnedMeshes(scene)[0]?.skeleton
-  const skelIndexOf = new Map((skeleton?.bones || []).map((bone, i) => [bone, i]))
   // skeleton index → overlay index, so a single pass over the weights can score
   // straight into overlay order.
+  const skeleton = collectSkinnedMeshes(scene)[0]?.skeleton
+  const toSkeleton = rigSkeletonIndices(rig)
   const toOverlay = new Int32Array(skeleton?.bones?.length || 0).fill(-1)
-  bones.forEach((bone, overlay) => {
-    const skel = skelIndexOf.get(bone)
-    if (skel != null) toOverlay[skel] = overlay
-  })
+  toSkeleton.forEach((skel, overlay) => { if (skel >= 0) toOverlay[skel] = overlay })
 
   const indices = skinIndex.array
   const values = skinWeight.array

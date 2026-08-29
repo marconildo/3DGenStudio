@@ -193,9 +193,17 @@ import {
   moveRigBone,
   renameRigBone,
   restoreRigSnapshot,
+  rigSkeletonIndices,
   snapshotRig,
   takeWeightsFromParent,
 } from '../utils/meshRigEdit'
+import {
+  applyWeightBrush,
+  fillBoneWeight,
+  readBoneWeights,
+  refreshWeightColors,
+  writeWeightColors,
+} from '../utils/meshWeightPaint'
 
 // Default option sets for the Python mesh-tools panels. These mirror the
 // defaults of autouv.unwrap() and autoretopo.RetopoConfig 1:1 (see
@@ -516,6 +524,36 @@ export default function MeshEditorPage() {
   // Names of bones added by hand this session, so the unused-bone sweep doesn't
   // offer to delete a bone the user has only just created.
   const rigAddedBonesRef = useRef(new Set())
+
+  // --- Weight painting (Auto Rig panel → "Paint Weights") ---------------------
+  // The other half of fixing a bad rig: correcting which vertices a bone moves,
+  // rather than where the bone is. Shares the rig undo stack and the `selectedBone`
+  // selection with bone editing, and is mutually exclusive with it so the bone
+  // gizmo never competes with the brush for the same drag.
+  const [weightPainting, setWeightPainting] = useState(false)
+  const [weightBrush, setWeightBrush] = useState('add')
+  const [weightSize, setWeightSize] = useState(0.1)
+  const [weightSizeRange, setWeightSizeRange] = useState({ min: 0.002, max: 1 })
+  const [weightStrength, setWeightStrength] = useState(0.5)
+  const [weightHardness, setWeightHardness] = useState(0.5)
+  const [weightTarget, setWeightTarget] = useState(1)
+  const [weightFrontOnly, setWeightFrontOnly] = useState(true)
+  const [weightNormalize, setWeightNormalize] = useState(true)
+  const [weightCursor, setWeightCursor] = useState(null)   // { x, y, pixelRadius } or null
+  const weightStrokeRef = useRef(null)                     // { pointerId, lastScreen, accumulated }
+  const weightStrokeKeysRef = useRef({ ctrl: false, shift: false })
+  // The heatmap: the selected bone's weight per vertex, plus the display geometry
+  // carrying the colours. Refs, not state — a dab rewrites them and lets
+  // frameloop="always" re-upload, with no React work per stroke.
+  //
+  // The colour attribute is deliberately NOT cached separately. Holding it in its
+  // own ref gave the mesh two sources of truth for "the thing being drawn", and
+  // any render whose result React discarded (StrictMode renders twice) left the
+  // ref pointing at a buffer nothing would ever display — a solid black mesh.
+  // Reading it back off the geometry cannot drift.
+  const weightValuesRef = useRef(null)
+  const weightPaintGeometryRef = useRef(null)
+  const weightColors = () => weightPaintGeometryRef.current?.attributes?.color || null
 
   // --- Auto Rig → Animations (mesh2motion reference clips retargeted onto the mesh) ---
   const [animReferenceId, setAnimReferenceId] = useState('')
@@ -1555,6 +1593,9 @@ export default function MeshEditorPage() {
     const r = geometry.boundingSphere?.radius || 1;
     setSculptSizeRange({ min: r * 0.001, max: r * 1.0 });
     setSculptSize(prev => (prev > 0 && prev < r * 2 ? prev : r * 0.08));
+    // The weight brush shares this context, so it shares the sizing too.
+    setWeightSizeRange({ min: r * 0.002, max: r * 0.6 });
+    setWeightSize(prev => (prev > 0 && prev < r * 2 ? prev : r * 0.08));
 
     return () => {
       // Drop refs so the next geometry rebuilds adjacency cleanly.
@@ -1744,6 +1785,116 @@ export default function MeshEditorPage() {
     ctx.geometry.attributes.position.needsUpdate = true;
     ctx.geometry.attributes.normal.needsUpdate = true;
   }, [sculptAutoSmooth, sculptBrush, sculptDirection, sculptFrontFacesOnly, sculptHardness, sculptSize, sculptStampRotation, sculptStrength, sculptSymmetry]);
+
+  // ── Weight painting ────────────────────────────────────────────────────────
+  // Reuses the sculpt context wholesale: the same spatial grid finds the vertices
+  // under the brush, the same smoothstep falloff shapes the dab, the same BVH
+  // proxy answers the raycast. Only what gets written differs — skinWeight
+  // instead of position — so none of that had to be built twice.
+
+  // `commitRigEdit` and `pushRigSnapshot` are defined further down, alongside the
+  // animation-invalidation plumbing they need. Reached through refs because the
+  // brush belongs up here with the other stroke kernels, and a direct call would
+  // read them before initialisation.
+  const pushRigSnapshotRef = useRef(null)
+  const commitRigEditRef = useRef(null)
+
+  // The selected bone, translated from the overlay index the UI speaks into the
+  // skeleton index `skinIndex` stores. Never assume the two coincide — see the
+  // header of utils/meshRigEdit.js.
+  const weightBoneSkel = useMemo(() => {
+    const rig = rigRevision >= 0 ? rigRef.current : null
+    if (!rig || selectedBone == null) return -1
+    const map = rigSkeletonIndices(rig)
+    return selectedBone < map.length ? map[selectedBone] : -1
+  }, [selectedBone, rigRevision])
+
+  // Where weight goes when the brush takes it off a vertex this bone owns
+  // outright: up the chain, to the parent. Without it, lowering a bone that is a
+  // vertex's only influence has nowhere to put the share it frees, so
+  // Subtract/Set/Blur silently do nothing on exactly the solid-red regions that
+  // most need correcting. -1 for a root bone, which genuinely has nowhere.
+  const weightFallbackSkel = useMemo(() => {
+    const rig = rigRevision >= 0 ? rigRef.current : null
+    const parent = selectedBone == null ? -1 : (skeleton?.parents?.[selectedBone] ?? -1)
+    if (!rig || parent < 0) return -1
+    const map = rigSkeletonIndices(rig)
+    return parent < map.length ? map[parent] : -1
+  }, [selectedBone, rigRevision, skeleton])
+
+  // Mirrored into a ref so the display geometry can colour itself the moment it
+  // is built, without taking the bone as a memo dependency (which would rebuild
+  // the whole container on every bone click).
+  const weightBoneSkelRef = useRef(-1)
+  weightBoneSkelRef.current = weightBoneSkel
+
+  const computeWeightCursorPixelRadius = useCallback((worldHitPoint, canvasHeight) => {
+    const camera = cameraRef.current
+    if (!camera || !worldHitPoint) return 24
+    const distance = camera.position.distanceTo(worldHitPoint)
+    const worldHeightAtDistance = viewWorldHeightAt(camera, distance)
+    if (worldHeightAtDistance <= 0) return 24
+    return Math.max(4, (weightSize / worldHeightAtDistance) * canvasHeight)
+  }, [weightSize])
+
+  // Recolour the whole mesh for the current bone. Called when the bone, the
+  // geometry or the weights change wholesale (entering the mode, undo, Fill);
+  // a brush dab takes the cheaper per-vertex path in applyWeightStamp.
+  const refreshWeightHeatmap = useCallback(() => {
+    const attribute = weightColors()
+    if (!attribute || !geometry) return
+    const values = readBoneWeights(geometry, weightBoneSkel, weightValuesRef.current)
+    weightValuesRef.current = values
+    writeWeightColors(attribute.array, values)
+    attribute.needsUpdate = true
+  }, [geometry, weightBoneSkel])
+
+  // One brush dab at an object-space point on the surface.
+  const applyWeightStamp = useCallback((point) => {
+    const ctx = sculptContextRef.current
+    if (!ctx || weightBoneSkel < 0 || !geometryHasSkin(ctx.geometry)) return
+    ensureSculptGrid(ctx, weightSize)
+
+    const queried = sculptQueryRadius(ctx, point.x, point.y, point.z, weightSize, weightHardness)
+    if (queried === 0) return
+
+    let count = queried
+    if (weightFrontOnly && cameraRef.current) {
+      const camera = cameraRef.current.position
+      count = sculptFilterFrontFacing(ctx, ctx._outIndices, ctx._outWeights, queried, camera.x, camera.y, camera.z)
+      if (count === 0) return
+    }
+
+    // Held modifiers override the chosen brush for the length of the stroke, the
+    // same way they do while sculpting: Ctrl takes weight away, Shift blurs.
+    const keys = weightStrokeKeysRef.current
+    const mode = keys.shift ? 'blur' : (keys.ctrl ? 'subtract' : weightBrush)
+
+    const changed = applyWeightBrush(ctx, ctx._outIndices, ctx._outWeights, count, weightBoneSkel, {
+      mode,
+      strength: weightStrength,
+      target: weightTarget,
+      normalize: weightNormalize,
+      fallbackBone: weightFallbackSkel,
+    })
+    if (!changed) return
+
+    const attribute = weightColors()
+    if (attribute && weightValuesRef.current) {
+      refreshWeightColors(
+        attribute.array, weightValuesRef.current,
+        ctx.geometry, weightBoneSkel, ctx._outIndices, count,
+      )
+      attribute.needsUpdate = true
+    }
+  }, [weightBoneSkel, weightBrush, weightFallbackSkel, weightFrontOnly, weightHardness, weightNormalize, weightSize, weightStrength, weightTarget])
+
+  const cancelWeightStroke = useCallback(() => {
+    const stroke = weightStrokeRef.current
+    if (!stroke) return
+    canvasShellRef.current?.releasePointerCapture?.(stroke.pointerId)
+    weightStrokeRef.current = null
+  }, [])
 
   // Cancel any active sculpt stroke (used by pointercancel / mode switch).
   const cancelSculptStroke = useCallback(() => {
@@ -3310,6 +3461,46 @@ export default function MeshEditorPage() {
     if (rigGizmoDragRef.current || animGizmoDragRef.current) {
       return
     }
+    // Weight painting owns the left button while it is on, so the bone-pick
+    // branch below would never see it. Alt is the way back to picking a bone on
+    // the mesh — the Skeleton list is the other.
+    // With no bone chosen yet there is nothing to paint, so the click falls
+    // through to the bone-pick branch instead: the first click selects, the ones
+    // after it paint.
+    if (activeMenu === 'autorig' && weightPainting && !event.altKey && weightBoneSkel >= 0) {
+      const ctx = sculptContextRef.current
+      const mesh = ensureSculptMesh()
+      const camera = cameraRef.current
+      const shell = canvasShellRef.current
+      if (!ctx || !mesh || !camera || !shell) return
+
+      const rect = shell.getBoundingClientRect()
+      const hit = sculptRaycastMesh(mesh, camera, nextPoint.x, nextPoint.y, rect.width, rect.height)
+      if (!hit) return
+
+      event.preventDefault()
+      weightStrokeKeysRef.current = { ctrl: !!event.ctrlKey || !!event.metaKey, shift: !!event.shiftKey }
+      // One snapshot per stroke, taken before the first dab — the same contract
+      // the bone gizmo uses for a drag. Through the ref, like the commit below:
+      // pushRigSnapshot is declared further down the component, so naming it in
+      // this callback's dependency array would read it before initialisation.
+      if (!pushRigSnapshotRef.current?.()) return
+      applyWeightStamp(hit.point)
+
+      weightStrokeRef.current = {
+        pointerId: event.pointerId,
+        lastScreen: { x: nextPoint.x, y: nextPoint.y },
+        accumulated: 0,
+      }
+      setWeightCursor({
+        x: nextPoint.x,
+        y: nextPoint.y,
+        pixelRadius: computeWeightCursorPixelRadius(hit.worldPoint, rect.height)
+      })
+      shell.setPointerCapture?.(event.pointerId)
+      return
+    }
+
     if (activeMenu === 'autorig' && skeleton?.joints?.length && cameraRef.current) {
       const pick = pickBoneAt(nextPoint)
       if (!pick.ok) return
@@ -3649,7 +3840,7 @@ export default function MeshEditorPage() {
     }
 
     canvasShellRef.current?.setPointerCapture?.(event.pointerId)
-  }, [activeMenu, animEditOpen, animPlaying, animPreview, applySculptStamp, beginPaintStroke, booleanPlaceMode, booleanStampBasis, brushSize, captureMaskPreviewBase, computeSculptCursorPixelRadius, ensureLayerMaskCanvas, ensureSculptMesh, getMeshIntersection, getPointerPosition, numericAssetId, paintBrushSize, paintColor, paintFlow, paintHardness, paintLayers, paintMode, paintRotation, pendingPatch, projectionMaskBrushSize, projectionMaskEditLayerId, projectionMaskErase, pushSculptUndo, resetSelection, scheduleProjectionMaskPaint, sculptBrush, sculptFrontFacesOnly, sculptHardness, sculptSize, sculptStampRotation, sculptSymmetry, selectedLayerId, pickBoneAt, selectionMesh, skeleton, stampBrushAtUv, syncProjectionMaskCanvasSize, texturableMesh, texturingReady])
+  }, [activeMenu, animEditOpen, animPlaying, animPreview, applySculptStamp, applyWeightStamp, beginPaintStroke, booleanPlaceMode, booleanStampBasis, brushSize, captureMaskPreviewBase, computeSculptCursorPixelRadius, computeWeightCursorPixelRadius, ensureLayerMaskCanvas, ensureSculptMesh, getMeshIntersection, getPointerPosition, numericAssetId, paintBrushSize, paintColor, paintFlow, paintHardness, paintLayers, paintMode, paintRotation, pendingPatch, pickBoneAt, projectionMaskBrushSize, projectionMaskEditLayerId, projectionMaskErase, pushSculptUndo, resetSelection, scheduleProjectionMaskPaint, sculptBrush, sculptFrontFacesOnly, sculptHardness, sculptSize, sculptStampRotation, sculptSymmetry, selectedLayerId, selectionMesh, skeleton, stampBrushAtUv, syncProjectionMaskCanvasSize, texturableMesh, texturingReady, weightBoneSkel, weightPainting])
 
   const handleCanvasPointerMove = useCallback((event) => {
     if (activeMenu === 'boolean' && booleanPlaceMode) {
@@ -3700,6 +3891,75 @@ export default function MeshEditorPage() {
       event.preventDefault()
       setBooleanPlaceMode(true)
       setFeedback('Move pointer on mesh to reposition stamp, then click to lock.')
+      return
+    }
+
+    if (activeMenu === 'autorig' && weightPainting) {
+      const ctx = sculptContextRef.current
+      const mesh = ensureSculptMesh()
+      const camera = cameraRef.current
+      const shell = canvasShellRef.current
+      if (!ctx || !mesh || !camera || !shell) return
+
+      const nextPoint = getPointerPosition(event)
+      if (!nextPoint) return
+      const rect = shell.getBoundingClientRect()
+
+      const hoverHit = sculptRaycastMesh(mesh, camera, nextPoint.x, nextPoint.y, rect.width, rect.height)
+      if (hoverHit) {
+        setWeightCursor({
+          x: nextPoint.x,
+          y: nextPoint.y,
+          pixelRadius: computeWeightCursorPixelRadius(hoverHit.worldPoint, rect.height)
+        })
+      } else if (!weightStrokeRef.current) {
+        setWeightCursor(null)
+      }
+
+      const stroke = weightStrokeRef.current
+      if (!stroke) return
+
+      // Walk the segment in fixed screen-space steps so a fast drag lays a
+      // continuous band instead of isolated blobs where the events landed. Same
+      // idea as the sculpt stroke below, without the lazy-mouse smoothing —
+      // weights want the pointer's actual path, not a trailing one.
+      const dx = nextPoint.x - stroke.lastScreen.x
+      const dy = nextPoint.y - stroke.lastScreen.y
+      const screenDist = Math.hypot(dx, dy)
+      if (screenDist <= 0.01) return
+
+      const pxPerWorldRadius = hoverHit
+        ? Math.max(1, computeWeightCursorPixelRadius(hoverHit.worldPoint, rect.height))
+        : 24
+      const stepPixels = Math.max(1, 0.25 * pxPerWorldRadius)
+
+      const walked = stroke.accumulated
+      const steps = Math.floor((walked + screenDist) / stepPixels)
+      if (steps <= 0) {
+        stroke.accumulated = walked + screenDist
+        stroke.lastScreen.x = nextPoint.x
+        stroke.lastScreen.y = nextPoint.y
+        return
+      }
+
+      const ux = dx / screenDist
+      const uy = dy / screenDist
+      let cursorX = stroke.lastScreen.x
+      let cursorY = stroke.lastScreen.y
+      let traveled = 0
+      for (let step = 0; step < steps; step += 1) {
+        const advance = step === 0 ? stepPixels - walked : stepPixels
+        cursorX += ux * advance
+        cursorY += uy * advance
+        traveled += advance
+        const stepHit = sculptRaycastMesh(mesh, camera, cursorX, cursorY, rect.width, rect.height)
+        if (!stepHit) continue
+        applyWeightStamp(stepHit.point)
+      }
+
+      stroke.accumulated = (walked + screenDist) - traveled
+      stroke.lastScreen.x = nextPoint.x
+      stroke.lastScreen.y = nextPoint.y
       return
     }
 
@@ -4010,9 +4270,23 @@ export default function MeshEditorPage() {
       startPoint: dragStateRef.current.startPoint,
       endPoint: nextPoint
     })
-  }, [activeMenu, applySculptStamp, booleanPlaceMode, brushSize, computeSculptCursorPixelRadius, ensureSculptMesh, getMeshIntersection, getPointerPosition, paintBrushSize, paintColor, paintFlow, paintHardness, paintMode, paintRotation, projectionMaskBrushSize, projectionMaskEditLayerId, projectionMaskErase, recompositePaintTexture, scheduleProjectionMaskPaint, sculptSpacing, sculptSteadyStroke, sculptStrength, selectionMesh, stampBrushAtUv, texturableMesh, updateMaskOverlay])
+  }, [activeMenu, applySculptStamp, applyWeightStamp, booleanPlaceMode, brushSize, computeSculptCursorPixelRadius, computeWeightCursorPixelRadius, ensureSculptMesh, getMeshIntersection, getPointerPosition, paintBrushSize, paintColor, paintFlow, paintHardness, paintMode, paintRotation, projectionMaskBrushSize, projectionMaskEditLayerId, projectionMaskErase, recompositePaintTexture, scheduleProjectionMaskPaint, sculptSpacing, sculptSteadyStroke, sculptStrength, selectionMesh, stampBrushAtUv, texturableMesh, updateMaskOverlay, weightPainting])
 
   const handleCanvasPointerUp = useCallback((event) => {
+    if (activeMenu === 'autorig' && weightStrokeRef.current) {
+      const stroke = weightStrokeRef.current
+      if (event.button !== 0) return
+      canvasShellRef.current?.releasePointerCapture?.(stroke.pointerId)
+      weightStrokeRef.current = null
+
+      // One commit per stroke, not per dab: this refreshes the overlay, marks
+      // the rig dirty for the save banners, and stales the cached animation
+      // retargets — all of which are keyed to the weights that just changed.
+      const name = rigRef.current?.boneNames?.[selectedBone] || 'bone'
+      commitRigEditRef.current?.(`Painted weights on ${name}.`)
+      return
+    }
+
     if (activeMenu === 'sculpting') {
       const stroke = sculptStrokeRef.current
       if (!stroke || event.button !== 0) return
@@ -4092,9 +4366,20 @@ export default function MeshEditorPage() {
     canvasShellRef.current?.releasePointerCapture?.(dragStateRef.current.pointerId)
     dragStateRef.current = null
     setSelectionBox(null)
-  }, [activeMenu, applyProjectionMaskAsync, getPointerPosition, paintProjectionMaskDabNow, projectionLayers, projectionMaskEditLayerId, recompositePaintTexture, renderMaskPreview, selectAtPoint, selectWithinRectangle])
+  }, [activeMenu, applyProjectionMaskAsync, getPointerPosition, paintProjectionMaskDabNow, projectionLayers, projectionMaskEditLayerId, recompositePaintTexture, renderMaskPreview, selectAtPoint, selectedBone, selectWithinRectangle])
 
   const handleCanvasPointerCancel = useCallback(() => {
+    if (weightStrokeRef.current) {
+      // The dabs already landed, so this is a finished edit either way — commit
+      // it rather than leave the rig changed with nothing on the undo stack
+      // pointing at it.
+      cancelWeightStroke()
+      setWeightCursor(null)
+      const name = rigRef.current?.boneNames?.[selectedBone] || 'bone'
+      commitRigEditRef.current?.(`Painted weights on ${name}.`)
+      return
+    }
+
     if (sculptStrokeRef.current) {
       cancelSculptStroke()
       const ctx = sculptContextRef.current
@@ -4127,7 +4412,7 @@ export default function MeshEditorPage() {
     dragStateRef.current = null
     resetSelection()
     setSelectionBox(null)
-  }, [applyProjectionMaskAsync, cancelSculptStroke, projectionLayers, projectionMaskEditLayerId, resetSelection])
+  }, [applyProjectionMaskAsync, cancelSculptStroke, cancelWeightStroke, projectionLayers, projectionMaskEditLayerId, resetSelection, selectedBone])
 
   const handleTextureWorkflowInputChange = useCallback((parameter, rawValue) => {
     const valueType = getWorkflowValueType(parameter)
@@ -4647,9 +4932,11 @@ export default function MeshEditorPage() {
     () => {
       // rigRevision is the signal that the bone graph changed under the ref.
       const rig = rigRevision >= 0 ? rigRef.current : null
-      return rigEditing && rig ? computeRigInfluence(rig, geometry) : null
+      // Weight painting reports the selected bone's share as well, so it is
+      // computed for both rig sessions rather than for bone editing alone.
+      return (rigEditing || weightPainting) && rig ? computeRigInfluence(rig, geometry) : null
     },
-    [rigEditing, rigRevision, geometry],
+    [rigEditing, weightPainting, rigRevision, geometry],
   )
 
   const rigUnusedBones = useMemo(
@@ -4693,6 +4980,7 @@ export default function MeshEditorPage() {
     setRigCanRedo(false)
     return true
   }, [geometry])
+  pushRigSnapshotRef.current = pushRigSnapshot
 
   // Refresh the overlay from the mutated bone graph and record the edit.
   const commitRigEdit = useCallback((message, { mappingToo = false, counted = true } = {}) => {
@@ -4707,6 +4995,7 @@ export default function MeshEditorPage() {
     invalidateAnimationTarget(mappingToo)
     if (message) setFeedback(message)
   }, [invalidateAnimationTarget])
+  commitRigEditRef.current = commitRigEdit
 
   // `live` moves come from the gizmo mid-drag: apply them to the bones so the
   // overlay tracks the handle, but don't record an edit until the drag ends.
@@ -4822,9 +5111,16 @@ export default function MeshEditorPage() {
     if (!restored) return
     if (current) toStack.current.push(current)
 
+    // Keep the selection when the restored rig has the same bones: undoing a
+    // brush stroke would otherwise deselect the bone being painted and blank the
+    // heatmap mid-correction. Only a rename/add/delete really invalidates it.
+    const sameBones = current?.rigScene
+      && rigRef.current?.boneNames?.length === restored.rig.boneNames.length
+      && rigRef.current.boneNames.every((name, i) => name === restored.rig.boneNames[i])
+
     rigRef.current = restored.rig
     if (restored.geometry !== geometry) applyGeometryUpdate(restored.geometry, [], { pushUndo: false })
-    setSelectedBone(null)
+    if (!sameBones) setSelectedBone(null)
     setFromEnabled(fromStack.current.length > 0)
     setToEnabled(true)
     rigEditCountRef.current = Math.max(0, rigEditCountRef.current + delta)
@@ -4857,23 +5153,203 @@ export default function MeshEditorPage() {
     commitRigEdit('Skeleton reverted to how it was before editing.', { mappingToo: true, counted: false })
   }, [geometry, applyGeometryUpdate, commitRigEdit])
 
+  // Moving bones and painting weights are two views of one rig-editing session:
+  // they share the undo stack, the dirty flag and the Revert baseline, so a
+  // stroke and a moved joint undo in the order they happened. Only the entry into
+  // that session is shared here — the two are mutually exclusive on screen, so
+  // whichever you switch to keeps the history the other one started.
+  const beginRigSession = useCallback(() => {
+    rigBaselineRef.current = snapshotRig(rigRef.current, geometry)
+    rigUndoStackRef.current = []
+    rigRedoStackRef.current = []
+    rigEditCountRef.current = 0
+    rigAddedBonesRef.current.clear()
+    setRigCanUndo(false)
+    setRigCanRedo(false)
+    setRigEditDirty(false)
+  }, [geometry])
+
   const handleToggleRigEdit = useCallback(() => {
     setRigEditing(prev => {
       const next = !prev
-      if (next) {
-        // Entering: this rig is what Revert goes back to.
-        rigBaselineRef.current = snapshotRig(rigRef.current, geometry)
-        rigUndoStackRef.current = []
-        rigRedoStackRef.current = []
-        rigEditCountRef.current = 0
-        rigAddedBonesRef.current.clear()
-        setRigCanUndo(false)
-        setRigCanRedo(false)
-        setRigEditDirty(false)
-      }
+      // Entering with no session running: this rig is what Revert goes back to.
+      if (next && !weightPainting) beginRigSession()
       return next
     })
-  }, [geometry])
+    // The bone gizmo and the brush would otherwise fight over the same drag.
+    setWeightPainting(false)
+  }, [beginRigSession, weightPainting])
+
+  const handleToggleWeightPaint = useCallback((next) => {
+    setWeightPainting(prev => {
+      const value = next == null ? !prev : !!next
+      if (value && !rigEditing) beginRigSession()
+      return value
+    })
+    setRigEditing(false)
+    cancelWeightStroke()
+    setWeightCursor(null)
+  }, [beginRigSession, cancelWeightStroke, rigEditing])
+
+  // Fill / Clear: the whole bone at once, for wiping an influence Auto Rig got
+  // badly wrong before repainting it. One snapshot, one commit — same contract as
+  // a stroke, so they interleave in the same history.
+  const applyWeightFill = useCallback((value) => {
+    if (weightBoneSkel < 0 || !geometryHasSkin(geometry)) return
+    if (!pushRigSnapshotRef.current?.()) return
+    const changed = fillBoneWeight(geometry, weightBoneSkel, value, weightNormalize, weightFallbackSkel)
+    if (!changed) {
+      rigUndoStackRef.current.pop()
+      setRigCanUndo(rigUndoStackRef.current.length > 0)
+      setFeedback(value > 0 ? 'This bone already covers the whole mesh.' : 'This bone moves nothing already.')
+      return
+    }
+    refreshWeightHeatmap()
+    const name = rigRef.current?.boneNames?.[selectedBone] || 'bone'
+    commitRigEditRef.current?.(value > 0
+      ? `${name} now moves the whole mesh (${changed} vertices).`
+      : `Cleared ${name} from ${changed} vertices — its share went back to the other bones.`)
+  }, [geometry, refreshWeightHeatmap, selectedBone, weightBoneSkel, weightFallbackSkel, weightNormalize])
+
+  // The heatmap is drawn on a geometry of its own that SHARES position, normal
+  // and index with the editable one and owns nothing but the colours.
+  //
+  // The `color` attribute deliberately does not go on `geometry` itself: it is
+  // carried through the editable pipeline (see the attribute whitelist in
+  // utils/meshEditor.js), so it would be written into every saved GLB as COLOR_0
+  // and tint the mesh in every engine it was opened in afterwards.
+  const weightPaintGeometry = useMemo(() => {
+    const position = geometry?.attributes?.position
+    if (!weightPainting || !position) return null
+
+    const display = new THREE.BufferGeometry()
+    display.setAttribute('position', position)
+    if (geometry.attributes.normal) display.setAttribute('normal', geometry.attributes.normal)
+    if (geometry.index) display.setIndex(geometry.index)
+
+    // Colour it HERE, not in the effect below. React renders twice under
+    // StrictMode and commits the second pass, so an effect that fills
+    // the colours in afterwards can be writing into the copy that was thrown
+    // away — which showed up as a mesh painted solid black. Built
+    // coloured, the attribute is right in whichever pass survives, and the
+    // effect only has to keep it up to date.
+    const values = readBoneWeights(geometry, weightBoneSkelRef.current)
+    const colors = new THREE.BufferAttribute(new Float32Array(position.count * 3), 3)
+    writeWeightColors(colors.array, values)
+    display.setAttribute('color', colors)
+
+    weightValuesRef.current = values
+    return display
+  }, [weightPainting, geometry])
+
+  // Assigned during render, so it always holds whichever geometry React last
+  // produced — which is the one it commits.
+  weightPaintGeometryRef.current = weightPaintGeometry
+
+  // Dispose the PREVIOUS container when a new one replaces it, rather than in a
+  // cleanup. Two reasons, both of which bit:
+  //   * StrictMode runs every effect's cleanup once on mount, so a cleanup that
+  //     disposes `weightPaintGeometry` would tear down the geometry that is
+  //     still on screen;
+  //   * a cleanup running after the memo had already published the replacement
+  //     would tear down state the new geometry depends on.
+  // Nothing is disposed on unmount, and the shared attributes are detached
+  // before the container goes: BufferGeometry.dispose() frees the GPU buffer of
+  // every attribute it holds, which for position/normal/index are the editable
+  // geometry's own and still in use.
+  const previousWeightGeometryRef = useRef(null)
+  useEffect(() => {
+    const previous = previousWeightGeometryRef.current
+    if (previous && previous !== weightPaintGeometry) {
+      previous.deleteAttribute('position')
+      previous.deleteAttribute('normal')
+      previous.setIndex(null)
+      previous.dispose()
+    }
+    previousWeightGeometryRef.current = weightPaintGeometry
+  }, [weightPaintGeometry])
+
+  // Full recolour whenever the bone, the mesh or the weights change wholesale:
+  // entering the mode, switching bone, undo/redo, Fill/Clear. A brush dab takes
+  // the per-vertex path inside applyWeightStamp instead.
+  useEffect(() => {
+    if (weightPaintGeometry) refreshWeightHeatmap()
+  }, [weightPaintGeometry, refreshWeightHeatmap, rigRevision])
+
+  // What the viewport is actually showing. Weight painting overrides the PBR /
+  // Albedo / Sculpt choice for as long as it is on — including the lights, since
+  // the standard 1.25 ambient flattens the ramp into a bright wash.
+  const viewportDisplayMode = weightPaintGeometry ? 'weights' : displayMode
+
+  // Leaving Auto Rig, losing the rig, or an animation preview taking over the
+  // viewport all mean there is nothing to paint on — drop the mode rather than
+  // leave a brush armed over a mesh it can no longer edit.
+  useEffect(() => {
+    if (!weightPainting) return
+    if (activeMenu !== 'autorig' || !rigEditable || animPreview) {
+      cancelWeightStroke()
+      setWeightCursor(null)
+      setWeightPainting(false)
+    }
+  }, [weightPainting, activeMenu, rigEditable, animPreview, cancelWeightStroke])
+
+  // Everything the Weight Painting section of the Auto Rig panel draws from.
+  // Undo / Redo / Revert are the rig handlers unchanged — one session covers
+  // bone edits and brush strokes alike.
+  const weightPaintProps = useMemo(() => {
+    const boneName = selectedBone != null ? (skeleton?.names?.[selectedBone] || null) : null
+    // The vertex count is not decoration: a bone showing a share but moving no
+    // vertices would mean the overlay→skeleton mapping had drifted, and a bone
+    // moving thousands while the mesh renders flat means the fault is in the
+    // display instead. Worth being able to tell those apart at a glance.
+    let boneShare = null
+    if (boneName && rigInfluence?.hasSkin) {
+      const weight = rigInfluence.weights[selectedBone] || 0
+      const moved = rigInfluence.counts[selectedBone] || 0
+      const pct = rigInfluence.total > 0 ? (weight / rigInfluence.total) * 100 : 0
+      const share = pct <= 0 ? '0%' : `${pct < 0.1 ? '<0.1' : pct.toFixed(1)}%`
+      boneShare = `${share} of the mesh, ${moved} ${moved === 1 ? 'vertex' : 'vertices'}`
+    }
+
+    return {
+      available: rigEditable,
+      active: weightPainting,
+      onToggle: handleToggleWeightPaint,
+      boneName,
+      boneShare,
+      fallbackName: weightFallbackSkel >= 0 && selectedBone != null
+        ? (skeleton?.names?.[skeleton?.parents?.[selectedBone]] || null)
+        : null,
+      brush: weightBrush,
+      onBrushChange: setWeightBrush,
+      size: weightSize,
+      sizeRange: weightSizeRange,
+      onSizeChange: setWeightSize,
+      strength: weightStrength,
+      onStrengthChange: setWeightStrength,
+      hardness: weightHardness,
+      onHardnessChange: setWeightHardness,
+      target: weightTarget,
+      onTargetChange: setWeightTarget,
+      frontOnly: weightFrontOnly,
+      onFrontOnlyChange: setWeightFrontOnly,
+      normalize: weightNormalize,
+      onNormalizeChange: setWeightNormalize,
+      onFill: () => applyWeightFill(1),
+      onClear: () => applyWeightFill(0),
+      canUndo: rigCanUndo,
+      canRedo: rigCanRedo,
+      onUndo: handleRigUndo,
+      onRedo: handleRigRedo,
+      onRevert: handleRigRevert,
+      dirty: rigEditDirty,
+    }
+  }, [
+    applyWeightFill, handleRigRedo, handleRigRevert, handleRigUndo, handleToggleWeightPaint,
+    rigCanRedo, rigCanUndo, rigEditDirty, rigEditable, rigInfluence, selectedBone, skeleton,
+    weightBrush, weightFallbackSkel, weightFrontOnly, weightHardness, weightNormalize,
+    weightPainting, weightSize, weightSizeRange, weightStrength, weightTarget,
+  ])
 
   const handleRigGizmoDragStart = useCallback(() => {
     rigGizmoDragRef.current = true
@@ -9051,6 +9527,7 @@ export default function MeshEditorPage() {
                     rigBoneCount: rigRef.current?.boneCount || 0,
                     rigDropped,
                     rigEdited: rigEditDirty,
+                    weightPaint: weightPaintProps,
                     disabled: !geometry
                   }} />
                 ) : activeMenu === 'optimize' ? (
@@ -9170,7 +9647,7 @@ export default function MeshEditorPage() {
                 onPointerMove={handleCanvasPointerMove}
                 onPointerUp={handleCanvasPointerUp}
                 onPointerCancel={handleCanvasPointerCancel}
-                onPointerLeave={() => { setPaintCursorPos(null); setSculptCursor(null); if (projectionMaskCursorRef.current) projectionMaskCursorRef.current.style.display = 'none'; }}
+                onPointerLeave={() => { setPaintCursorPos(null); setSculptCursor(null); setWeightCursor(null); if (projectionMaskCursorRef.current) projectionMaskCursorRef.current.style.display = 'none'; }}
               >
                 <canvas
                   ref={projectionMaskCanvasRef}
@@ -9205,10 +9682,10 @@ export default function MeshEditorPage() {
                       }}
                     >
                       <ViewportCameras orthographic={orthographic} />
-                      <ambientLight intensity={displayMode === 'sculpt' ? 0.42 : 1.25} />
+                      <ambientLight intensity={viewportDisplayMode === 'sculpt' ? 0.42 : viewportDisplayMode === 'weights' ? 0.55 : 1.25} />
                       <directionalLight
-                        position={displayMode === 'sculpt' ? [5, 7, 4] : [5, 7, 9]}
-                        intensity={displayMode === 'sculpt' ? 2.2 : 2}
+                        position={viewportDisplayMode === 'sculpt' ? [5, 7, 4] : [5, 7, 9]}
+                        intensity={viewportDisplayMode === 'sculpt' ? 2.2 : viewportDisplayMode === 'weights' ? 1.1 : 2}
                         castShadow={showShadows}
                         shadow-mapSize-width={2048}
                         shadow-mapSize-height={2048}
@@ -9264,11 +9741,11 @@ export default function MeshEditorPage() {
                         />
                       ) : (
                         <EditorMesh
-                          geometry={geometry}
+                          geometry={weightPaintGeometry || geometry}
                           selectedFaceIndices={activeMenu === 'modeling' ? selectedFaceIndices : []}
                           selectedVertexIndices={activeMenu === 'modeling' ? selectedVertexIndices : []}
                           showShadows={showShadows}
-                          displayMode={displayMode}
+                          displayMode={viewportDisplayMode}
                           showWireframe={showWireframe}
                         />
                       )}
@@ -9379,6 +9856,17 @@ export default function MeshEditorPage() {
                     <span className="material-symbols-outlined mesh-editor-empty-state__icon">deployed_code_alert</span>
                     <span>Mesh could not be loaded.</span>
                   </div>
+                )}
+                {activeMenu === 'autorig' && weightPainting && weightCursor && (
+                  <div
+                    className="mesh-editor-paint-cursor mesh-editor-weight-cursor"
+                    style={{
+                      left: weightCursor.x,
+                      top: weightCursor.y,
+                      width: weightCursor.pixelRadius * 2,
+                      height: weightCursor.pixelRadius * 2
+                    }}
+                  />
                 )}
                 {activeMenu === 'sculpting' && sculptCursor && (
                   <div
