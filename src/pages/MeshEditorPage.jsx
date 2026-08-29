@@ -5174,6 +5174,13 @@ export default function MeshEditorPage() {
   // dock here in the first place.
   const animEditDocked = activeMenu === 'autorig' && animEditOpen && !!animPreview?.clip && !!animEditDescription
 
+  // The skeleton (and its bone labels) is only ever information for rigging, and it
+  // draws through the surface — in Sculpting or Painting it is a bright cage over
+  // whatever you are working on. So it lives with its mode: the toggle stays where
+  // the user left it, but nothing outside Auto Rig (its Animations / Kimodo / MoCap
+  // tabs included) draws it.
+  const skeletonVisible = showSkeleton && activeMenu === 'autorig'
+
   // Clamp the frame into the new clip's range rather than resetting to 0, so
   // stepping through one clip and switching to another keeps you roughly in place.
   useEffect(() => {
@@ -9295,7 +9302,7 @@ export default function MeshEditorPage() {
                       )}
                       <SkeletonOverlay
                         skeleton={skeleton}
-                        visible={showSkeleton && !animPreview}
+                        visible={skeletonVisible && !animPreview}
                         selectedBone={selectedBone}
                         showNames={showBoneNames}
                       />
@@ -9318,7 +9325,7 @@ export default function MeshEditorPage() {
                         <AnimatedSkeletonOverlay
                           root={animPreview.scene}
                           skinnedMesh={animPreview.skinnedMesh}
-                          visible={showSkeleton}
+                          visible={skeletonVisible}
                           showNames={showBoneNames}
                           // `selectedBone` first: it is what the last click set, dock
                           // included, so clicking a bone the clip does not animate (a
@@ -9328,7 +9335,7 @@ export default function MeshEditorPage() {
                           onJoints={handleLiveJoints}
                         />
                       )}
-                      {activeMenu === 'autorig' && rigEditing && rigEditable && showSkeleton && !animPreview && (
+                      {rigEditing && rigEditable && skeletonVisible && !animPreview && (
                         <BoneTransformGizmo
                           skeleton={skeleton}
                           boneIndex={selectedBone}

@@ -50,7 +50,7 @@ export default function AutoRigToolsPanel({
           onChange={onToggleSkeleton}
           disabled={!hasSkeleton}
           hint={hasSkeleton
-            ? 'Overlay the skeleton (bones) on the mesh in the viewport'
+            ? 'Overlay the skeleton (bones) on the mesh in this mode. Other modes never draw it.'
             : 'No skeleton yet — rig the mesh (or load an already-rigged one) to see its bones'}
         />
         {/* Only meaningful once there is a rig to name, so it appears with one.
