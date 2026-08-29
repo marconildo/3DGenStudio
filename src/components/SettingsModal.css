@@ -9,8 +9,6 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(13, 14, 16, 0.85);
-  backdrop-filter: blur(12px);
   z-index: 2000; /* Increased z-index */
   display: flex;
   align-items: center;
@@ -18,7 +16,19 @@
   animation: fadeIn 0.3s ease;
 }
 
+/* The dim + blur lives on its own empty layer behind the dialog. Painting it on
+   the overlay itself made the dialog a descendant of a backdrop-filter, and every
+   repaint inside the dialog (scrolling a tab) invalidated the fullscreen blur. */
+.settings-overlay__scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(13, 14, 16, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
 .settings-modal {
+  position: relative; /* above .settings-overlay__scrim */
   width: 700px;
   max-width: 90vw;
   max-height: 85vh;

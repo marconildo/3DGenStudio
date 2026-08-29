@@ -299,6 +299,49 @@ function ComfyUpdatePanel() {
   )
 }
 
+// One poller shared by every ServiceControl on screen. The Mesh Tools tab shows
+// four of them, and a per-component interval meant four IPC round trips — each
+// sweeping the filesystem for every service in the main process — every 3s for
+// one identical answer. It also stops while the window is hidden: a settings
+// dialog left open in a background window has nothing to reflect.
+const serviceStatusSubs = new Set()
+let serviceStatusTimer = null
+let serviceStatusLast = null
+
+function pollServiceStatus() {
+  const bridge = typeof window !== 'undefined' ? window.genStudioServices : null
+  if (!bridge) return
+  if (typeof document !== 'undefined' && document.hidden) return
+  bridge.status()
+    .then(s => { serviceStatusLast = s; serviceStatusSubs.forEach(fn => fn(s)) })
+    .catch(() => { /* ignore */ })
+}
+
+function subscribeServiceStatus(fn) {
+  serviceStatusSubs.add(fn)
+  if (serviceStatusLast) fn(serviceStatusLast)
+  if (!serviceStatusTimer) {
+    pollServiceStatus()
+    serviceStatusTimer = setInterval(pollServiceStatus, 3000) // reflect starting → running transitions
+  }
+  return () => {
+    serviceStatusSubs.delete(fn)
+    if (!serviceStatusSubs.size && serviceStatusTimer) {
+      clearInterval(serviceStatusTimer)
+      serviceStatusTimer = null
+    }
+  }
+}
+
+// Nothing below the status dot changes between most ticks, so re-rendering four
+// cards every 3s only bought needless layout work inside the modal's scroller.
+function sameServiceStatus(a, b) {
+  if (a === b) return true
+  if (!a || !b) return false
+  return a.label === b.label && a.installed === b.installed && a.running === b.running
+    && a.starting === b.starting && a.external === b.external
+}
+
 // Desktop-only: start/stop a Python service on demand and show its status. The
 // services aren't started at app launch — they spin up when a tool needs them,
 // and can be stopped here (stopping Rigging frees its GPU memory). Renders
@@ -312,14 +355,11 @@ function ServiceControl({ name }) {
 
   useEffect(() => {
     if (!isDesktop) return undefined
-    let alive = true
-    const refresh = async () => {
-      try { const s = await bridge.status(); if (alive) setSt(s?.[name] || null) } catch { /* ignore */ }
-    }
-    refresh()
-    const id = setInterval(refresh, 3000) // reflect starting → running transitions
-    return () => { alive = false; clearInterval(id) }
-  }, [isDesktop, bridge, name])
+    return subscribeServiceStatus(s => {
+      const next = s?.[name] || null
+      setSt(prev => (sameServiceStatus(prev, next) ? prev : next))
+    })
+  }, [isDesktop, name])
 
   if (!isDesktop || !st) return null
   if (!st.installed) return null // not installed yet (the installer card above handles that)
@@ -672,6 +712,11 @@ export default function SettingsModal({ onClose }) {
 
   return (
     <div className="settings-overlay" onClick={onClose}>
+      {/* The dimming blur is a SIBLING of the modal, not its parent: as an ancestor
+          its backdrop-filter had to be recomputed over the whole viewport on every
+          repaint of the dialog, which made scrolling a long tab crawl in the
+          desktop app's Chromium. Nothing paints inside it, so it now stays cached. */}
+      <div className="settings-overlay__scrim" aria-hidden="true" />
       <div className="settings-modal" onClick={e => e.stopPropagation()}>
         <div className="settings-header">
           <div className="settings-title-group">
