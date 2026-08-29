@@ -372,6 +372,32 @@ async function downloadAssetToCache(relativePath) {
   }
 }
 
+// Drop one entry, so the next read fetches the file from the shared server
+// again.
+//
+// The unbounded cache above is safe only while a stored file is never rewritten
+// under the same name — and there is one deliberate exception: the Mesh Editor's
+// "Save mesh" overwrites the source .glb IN PLACE so the asset keeps its id,
+// path and every link to it (see /api/meshes/editor/save). Without this call the
+// cached copy from before the save wins forever, and the viewport, the thumbnail
+// refresh and the mesh service all keep reading the pre-save mesh — which looks
+// exactly like the save having done nothing. "Save as version" writes a new
+// filename, which is why it never showed the problem.
+//
+// Takes either form of the path: "data/assets/meshes/x.glb" or "meshes/x.glb".
+export async function invalidateCachedAsset(assetPath) {
+  const relative = String(assetPath || '')
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .replace(/^(?:data\/)?assets\//, '');
+  if (!relative) return;
+
+  const cachePath = cachePathFor(relative);
+  if (!cachePath) return;
+
+  await fsp.rm(cachePath, { force: true }).catch(() => {});
+}
+
 // Asset bytes for a *stored* path ("data/assets/images/x.png"), served from the
 // local cache when possible. Used by compute paths, which need the buffer
 // itself rather than an HTTP response.

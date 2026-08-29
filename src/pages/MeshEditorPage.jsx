@@ -7087,7 +7087,10 @@ export default function MeshEditorPage() {
 
       try {
         const savedAssetUrl = savedAsset?.filename ? assetUrl(savedAsset.filename) : ''
-        const response = savedAssetUrl ? await fetch(savedAssetUrl) : null
+        // `cache: 'reload'` because a "replace" save keeps the asset's URL: the
+        // browser still holds the pre-save mesh for it, and a thumbnail rendered
+        // from those bytes would show the mesh as it was before the edit.
+        const response = savedAssetUrl ? await fetch(savedAssetUrl, { cache: 'reload' }) : null
         if (response?.ok) {
           const blob = await response.blob()
           const meshFile = new File([blob], savedAsset.filename?.split('/').pop() || `${savedAsset.name || 'mesh'}.glb`, {

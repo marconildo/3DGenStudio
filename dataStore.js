@@ -35,7 +35,7 @@ import {
   toStoredThumbnailPath,
   updateAssetThumbnail
 } from './storage.js';
-import { getRemoteTarget, readCachedAssetBytes, downloadAssetToPath } from './gateway.js';
+import { getRemoteTarget, readCachedAssetBytes, downloadAssetToPath, invalidateCachedAsset } from './gateway.js';
 import { enqueueUpload, startUploadQueue } from './uploadQueue.js';
 
 // --- local helpers ---------------------------------------------------------
@@ -236,6 +236,10 @@ export async function saveAssetEdit({
 }
 
 // Swap an existing asset's file, keeping its id and every link to it.
+//
+// Unlike every other write here this one reuses a path that already exists, so
+// it is the one case that can leave a stale copy in the gateway's asset cache —
+// hence the invalidation on the way out (see invalidateCachedAsset).
 export async function replaceAssetFile({
   assetId, type = 'mesh', name, bytes, extension,
   thumbnailBytes = null, thumbnailFilename = null,
@@ -243,18 +247,24 @@ export async function replaceAssetFile({
 }) {
   const remote = getRemoteTarget();
   if (!remote) {
-    return await replaceAssetFileById(assetId, {
+    const saved = await replaceAssetFileById(assetId, {
       name,
       type,
       filePath: await writeLocalAssetBytes(type, bytes, extension, relativePath),
       thumbnailPath: await writeLocalThumbnailBytes(thumbnailBytes, thumbnailFilename),
       width, height, metadata
     });
+    await invalidateCachedAsset(saved?.filePath || relativePath);
+    return saved;
   }
-  return await postIngestWithRetry(remote, `/api/assets/${assetId}/replace`, {
+  const saved = await postIngestWithRetry(remote, `/api/assets/${assetId}/replace`, {
     bytes, extension, thumbnailBytes, thumbnailFilename,
     payload: { type, name, width, height, metadata, relativePath }
   }, 'asset replacement');
+  // `saved` is a placeholder when the upload had to be spooled; the path we
+  // asked to write is still the right one to drop.
+  await invalidateCachedAsset(saved?.filePath || relativePath);
+  return saved;
 }
 
 // --- card processing snapshots --------------------------------------------
