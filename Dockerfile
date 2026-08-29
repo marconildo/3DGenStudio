@@ -46,7 +46,17 @@ ENV NODE_ENV=production \
 COPY --from=builder --chown=node:node /app/node_modules ./node_modules
 COPY --from=builder --chown=node:node /app/dist ./dist
 COPY --chown=node:node package.json version.json ./
-COPY --chown=node:node server.js storage.js wikiStorage.js auth.js serverMode.js gateway.js dataStore.js uploadQueue.js logs.js meshPivot.js ./
+COPY --chown=node:node server.js storage.js wikiStorage.js auth.js serverMode.js gateway.js dataStore.js uploadQueue.js logs.js meshPivot.js pgEmbedded.js ./
+# The SQL engine. db/index.js chooses a driver at startup -- PostgreSQL here,
+# SQLite on a desktop install -- and loads it by dynamic import, so the whole
+# directory ships rather than a name-by-name list that would look complete.
+# db/schema.pg.sql is read at runtime and travels with it.
+COPY --chown=node:node db ./db
+# The SQLite to PostgreSQL migration, run once per upgraded deployment (see
+# docker-compose.yml for the exact command). It needs the sqlite3 module, which
+# is why that dependency stays in the image even though the server itself never
+# loads it when running on PostgreSQL.
+COPY --chown=node:node tools/migrate-sqlite-to-postgres.mjs ./tools/
 COPY --chown=node:node mcp ./mcp
 COPY --chown=node:node wiki ./wiki
 

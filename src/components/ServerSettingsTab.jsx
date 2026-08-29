@@ -56,21 +56,32 @@ function RemoteConnectionSection() {
     }
   }
 
+  // Each of these swaps the workspace, so the window reloads onto the new one.
+  // The short delay is only so the confirmation is readable first.
+  const noticeThenReload = (message) => {
+    setNotice(message)
+    setTimeout(() => remote.reloadWindow(), 900)
+  }
+
   const handleSignIn = () => run(async () => {
     const result = await remote.signIn({ url, login, password })
     setPassword('')
-    setNotice(`Signed in to ${result.url} as ${result.login}.`)
+    noticeThenReload(`Signed in to ${result.url} as ${result.login}. Reloading…`)
   })
 
   const handleSignOut = () => run(async () => {
     await remote.signOut()
-    setNotice('Signed out. Projects and assets stay on the server until you sign in again.')
+    noticeThenReload('Signed out. Projects and assets stay on the server until you sign in again. Reloading…')
   })
 
   const handleDisconnect = () => run(async () => {
     await remote.disconnect()
     setEdited({ url: null, login: null })
-    setNotice('Disconnected. This installation is using its own local database again.')
+    noticeThenReload('Disconnected. This installation is using its own local database again. Reloading…')
+  })
+
+  const handleOfflineFallback = (enabled) => run(async () => {
+    await remote.setOfflineFallback(enabled)
   })
 
   const statusTone = !remote.configured
@@ -160,6 +171,24 @@ function RemoteConnectionSection() {
               <button className="server-btn" disabled={busy} onClick={handleDisconnect}>DISCONNECT</button>
             )}
           </div>
+
+          <label className="server-offline-toggle">
+            <input
+              type="checkbox"
+              disabled={busy}
+              checked={remote.offlineFallback !== false}
+              onChange={e => handleOfflineFallback(e.target.checked)}
+            />
+            <span>
+              <strong>Keep working when the server is unreachable</strong>
+              <em>
+                Falls back to this computer's own projects instead of pausing, and
+                reconnects by itself when the server returns. Note that they are a
+                different set of projects: anything you create while offline stays
+                on this computer.
+              </em>
+            </span>
+          </label>
         </div>
       </section>
 

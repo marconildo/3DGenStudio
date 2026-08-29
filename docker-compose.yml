@@ -2,18 +2,76 @@
 # ComfyUI and the mesh/rig/motion tools; this only holds the shared assets,
 # projects and user accounts.
 #
-#   1. cp .env.docker.example .env   (then edit it — a JWT secret is required)
+#   1. cp .env.docker.example .env   (then edit it — two secrets are required)
 #   2. docker compose up -d
 #
+# UPGRADING AN EXISTING SQLITE DEPLOYMENT: migrate the data before the first
+# start on PostgreSQL, or the server will refuse to come up (deliberately —
+# see GENSTUDIO_ALLOW_EMPTY_DATABASE in .env.docker.example):
+#
+#   docker compose up -d db
+#   docker compose run --rm --entrypoint node genstudio-server \
+#     tools/migrate-sqlite-to-postgres.mjs --from ./data/app.db \
+#     --to "$GENSTUDIO_DATABASE_URL"
+#   docker compose up -d
+#
 services:
+  # PostgreSQL rather than SQLite, because a team's requests have to run in
+  # parallel. SQLite is still the engine for a single-user desktop install, and
+  # the application code is identical on both — see db/index.js.
+  #
+  # Nothing extra to install: this is one more image the same `docker compose up`
+  # pulls and runs.
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${GENSTUDIO_DB_NAME:-genstudio}
+      POSTGRES_USER: ${GENSTUDIO_DB_USER:-genstudio}
+      # Required. The database is not published outside the compose network, but
+      # a default password would still be a default password.
+      POSTGRES_PASSWORD: ${GENSTUDIO_DB_PASSWORD:?set GENSTUDIO_DB_PASSWORD in .env}
+    volumes:
+      - genstudio-db:/var/lib/postgresql/data
+    healthcheck:
+      # The app refuses to start if it cannot reach the database, so waiting for
+      # this is what makes `docker compose up` work on a cold machine.
+      test: ["CMD-SHELL", "pg_isready -U ${GENSTUDIO_DB_USER:-genstudio} -d ${GENSTUDIO_DB_NAME:-genstudio}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    # Deliberately NOT published on the host: only the app needs to reach it.
+    # Add a `ports:` mapping here if you want to point psql or a backup job at
+    # it from outside.
+
   genstudio-server:
     build: .
     image: 3dgenstudio-server:latest
     restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
     ports:
       - "${GENSTUDIO_PORT:-3001}:3001"
     environment:
       GENSTUDIO_MODE: server
+
+      # Presence of this is what selects PostgreSQL; without it the app runs on
+      # SQLite, which is what every desktop install does.
+      GENSTUDIO_DATABASE_URL: postgres://${GENSTUDIO_DB_USER:-genstudio}:${GENSTUDIO_DB_PASSWORD}@db:5432/${GENSTUDIO_DB_NAME:-genstudio}
+
+      # Connections held open for the app. Each concurrent request needs one, so
+      # this is the real ceiling on how much work happens at once.
+      GENSTUDIO_DB_POOL_MAX: ${GENSTUDIO_DB_POOL_MAX:-10}
+
+      # Log any statement slower than this many milliseconds. 0 turns it off.
+      GENSTUDIO_SLOW_QUERY_MS: ${GENSTUDIO_SLOW_QUERY_MS:-500}
+
+      # Set to 1 only when a genuinely empty database is intended. It exists so a
+      # deployment that has not been migrated yet fails loudly instead of coming
+      # up healthy and apparently wiped.
+      GENSTUDIO_ALLOW_EMPTY_DATABASE: ${GENSTUDIO_ALLOW_EMPTY_DATABASE:-}
 
       # Required. The container refuses to start without it, on purpose: a
       # per-restart secret would silently invalidate every session on deploy.
@@ -40,10 +98,15 @@ services:
       TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-}
 
     volumes:
-      # Holds app.db plus every image, mesh, thumbnail and motion clip. This is
-      # the only stateful path — back it up. Must be <workdir>/data, because
-      # storage.js derives DATA_DIR from process.cwd().
+      # Every image, mesh, thumbnail and motion clip. Asset BYTES still live on
+      # disk and are referenced by path — moving the database to PostgreSQL did
+      # not change that, so this volume is still stateful and still needs backing
+      # up, alongside a pg_dump of the database.
+      #
+      # Must be <workdir>/data, because storage.js derives DATA_DIR from
+      # process.cwd().
       - genstudio-data:/app/data
 
 volumes:
   genstudio-data:
+  genstudio-db:

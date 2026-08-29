@@ -12,6 +12,7 @@
 import express from 'express';
 import fsp from 'node:fs/promises';
 import { readFileSync, existsSync, createWriteStream } from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import process from 'node:process';
 import { Buffer } from 'node:buffer';
@@ -47,7 +48,18 @@ const STRIPPED_HEADERS = new Set([
   'content-length', 'content-encoding'
 ]);
 
-const EMPTY_REMOTE = { url: '', login: '', token: '', user: null };
+// `offlineFallback` is the answer to "the server is down, now what?".
+//
+// ON (default): a request that cannot reach the server is served from this
+// machine's own database instead of failing. The connection is NOT forgotten —
+// forwarding resumes by itself the moment the server answers again.
+//
+// OFF: data work blocks with a 503 until the server is back. Safer in one
+// specific way, and it is worth being explicit about which: falling back shows
+// this computer's local workspace, which is a DIFFERENT set of projects from the
+// server's. Anything created while offline stays on this computer and does not
+// appear on the server when it returns.
+const EMPTY_REMOTE = { url: '', login: '', token: '', user: null, offlineFallback: true };
 
 // Loaded at module scope, not only in mountGateway(): dataStore.js asks
 // getRemoteTarget() where results belong, and it must get the right answer even
@@ -64,7 +76,10 @@ function readRemoteConfig() {
       token: String(parsed?.token || ''),
       // Cached from the sign-in response so the UI can show who you are and
       // what you may do without a round trip on every render.
-      user: parsed?.user || null
+      user: parsed?.user || null,
+      // Absent in a file written before this option existed, which must read as
+      // ON — that is the behaviour someone upgrading is asking for.
+      offlineFallback: parsed?.offlineFallback !== false
     };
   } catch (err) {
     console.warn('Could not read the remote server configuration:', err.message);
@@ -82,6 +97,91 @@ async function writeRemoteConfig(next) {
 
 export function isGatewayActive() {
   return Boolean(remoteConfig.url && remoteConfig.token);
+}
+
+// --------------------------------------------------------------------------
+// Reachability
+// --------------------------------------------------------------------------
+//
+// Without this, a server that is switched off costs every single request the
+// operating system's TCP connect timeout — about 11 seconds on Windows. A page
+// that issues a handful of requests then appears frozen for a minute, which
+// reads as "the app is broken", not "the server is down". Measured before this
+// existed: GET /api/projects took 10.7s to fail.
+//
+// So: one cheap TCP probe, cached, shared by everything. A request against a
+// server known to be down fails (or falls back) in microseconds.
+
+// Short enough that a down server is noticed almost immediately, long enough
+// that a busy LAN server is not declared dead for a stutter.
+const PROBE_TIMEOUT_MS = 2500;
+// How long a probe result is trusted. Deliberately brief: this is what decides
+// how quickly the app notices the server coming BACK.
+const PROBE_TTL_MS = 3000;
+
+let probeState = { at: 0, ok: true, inFlight: null };
+
+function remoteHostPort() {
+  try {
+    const parsed = new URL(remoteConfig.url);
+    return {
+      host: parsed.hostname,
+      port: Number(parsed.port) || (parsed.protocol === 'https:' ? 443 : 80)
+    };
+  } catch {
+    return null;
+  }
+}
+
+function tcpProbe({ host, port }) {
+  return new Promise(resolve => {
+    const socket = net.createConnection({ host, port });
+    const settle = (ok) => {
+      socket.removeAllListeners();
+      socket.destroy();
+      resolve(ok);
+    };
+    socket.setTimeout(PROBE_TIMEOUT_MS);
+    socket.once('connect', () => settle(true));
+    socket.once('timeout', () => settle(false));
+    socket.once('error', () => settle(false));
+  });
+}
+
+/**
+ * Is the shared server accepting connections? Cached for PROBE_TTL_MS, and
+ * concurrent callers share one probe rather than opening a socket each.
+ */
+export async function isRemoteReachable() {
+  if (!remoteConfig.url) return false;
+
+  const now = Date.now();
+  if (now - probeState.at < PROBE_TTL_MS) return probeState.ok;
+  if (probeState.inFlight) return probeState.inFlight;
+
+  const target = remoteHostPort();
+  if (!target) return false;
+
+  probeState.inFlight = tcpProbe(target).then(ok => {
+    const changed = ok !== probeState.ok;
+    probeState = { at: Date.now(), ok, inFlight: null };
+    if (changed) {
+      console.log(ok
+        ? `🔗 ${remoteConfig.url} is reachable again — resuming forwarding.`
+        : `🔌 ${remoteConfig.url} is unreachable.${remoteConfig.offlineFallback
+          ? ' Serving this computer\'s local data until it returns.'
+          : ' Project and asset changes are paused.'}`);
+    }
+    return ok;
+  });
+
+  return probeState.inFlight;
+}
+
+// Called whenever a real request proves the server is up or down, so the state
+// tracks reality without waiting for the next probe.
+function noteReachability(ok) {
+  probeState = { at: Date.now(), ok, inFlight: probeState.inFlight };
 }
 
 // Where compute results must be sent, or null when this install owns its data.
@@ -102,7 +202,13 @@ export function getRemoteStatus() {
     // Whether this session may write. The server enforces it regardless; this
     // is so the UI can say why an action is unavailable instead of letting the
     // user hit a 403.
-    readOnly: isGatewayActive() && remoteConfig.user?.role === 'viewer'
+    readOnly: isGatewayActive() && remoteConfig.user?.role === 'viewer',
+    offlineFallback: remoteConfig.offlineFallback !== false,
+    // Last known reachability rather than a fresh probe: this route is polled
+    // every 15 seconds by every open window, and a socket per poll per window
+    // is a lot of connections to answer a question the probe cache already has.
+    // `reachable` is meaningless with no server configured, hence the null.
+    reachable: remoteConfig.url ? probeState.ok : null
   };
 }
 
@@ -130,11 +236,26 @@ function relayResponseHeaders(upstream, res) {
 
 // The remote is down, unreachable, or the stored token expired. Say so plainly
 // rather than failing as a generic 500 — data work is meant to block visibly.
+// The server is known to be down and offlineFallback is off, so the user has
+// asked to block rather than switch workspaces. No request was attempted.
+function offline(res) {
+  if (res.headersSent) return res.end();
+  res.status(503).json({
+    error: `The shared 3D Gen Studio server at ${remoteConfig.url} is unreachable. Local tools still work; project and asset changes are paused.`,
+    remote: remoteConfig.url,
+    offlineFallback: false
+  });
+}
+
 function unreachable(res, err) {
   // undici collapses every transport failure into a bare "fetch failed", so the
   // cause chain is the only thing that says what actually happened.
   const cause = err?.cause ? ` (${err.cause.code || ''} ${err.cause.message || err.cause})`.trim() : '';
   console.warn(`Gateway request to ${remoteConfig.url} failed: ${err?.message || err}${cause}`);
+  // A request that got as far as failing is better evidence than any probe, so
+  // record it: everything queued behind this one then fails fast instead of
+  // each paying the connect timeout over again.
+  noteReachability(false);
   if (res.headersSent) return res.end();
   res.status(503).json({
     error: `The shared 3D Gen Studio server at ${remoteConfig.url} is unreachable. Local tools still work; project and asset changes are paused.`,
@@ -336,7 +457,23 @@ export function mountGateway(app, { mode }) {
   }
 
   // --- local connection management (never forwarded; see serverMode.js) ---
-  app.get('/api/remote', (req, res) => res.json(getRemoteStatus()));
+  // Awaits the probe rather than reporting the cached value: this is what the
+  // connection banner is drawn from, and a banner that says "connected" about a
+  // server that is off is worse than a poll that takes an extra moment. The
+  // result is cached, so the cost is at most one probe every few seconds no
+  // matter how many windows are open.
+  app.get('/api/remote', async (req, res) => {
+    if (remoteConfig.url) await isRemoteReachable();
+    res.json(getRemoteStatus());
+  });
+
+  // Whether an unreachable server means "use this computer's data" or "stop and
+  // wait". See EMPTY_REMOTE for why that is a real choice and not a preference.
+  app.post('/api/remote/offline-fallback', express.json(), async (req, res) => {
+    const enabled = req.body?.enabled !== false;
+    await writeRemoteConfig({ ...remoteConfig, offlineFallback: enabled });
+    res.json(getRemoteStatus());
+  });
 
   // The browser never handles the shared server's token: it posts credentials
   // here and this process holds the JWT for the lifetime of the install.
@@ -371,7 +508,19 @@ export function mountGateway(app, { mode }) {
         });
       }
 
-      await writeRemoteConfig({ url, login, token: payload.token, user: payload.user || null });
+      await writeRemoteConfig({
+        url,
+        login,
+        token: payload.token,
+        user: payload.user || null,
+        // Carried across: this is a preference about how outages behave, not
+        // part of the session, and rebuilding the object without it would
+        // silently reset the choice on every sign-in.
+        offlineFallback: remoteConfig.offlineFallback !== false
+      });
+      // We just spoke to it, so start from "up" rather than whatever a probe
+      // last concluded -- typically "down", which is why the user is here.
+      noteReachability(true);
       console.log(`🔗 Signed in to the shared server at ${url} as ${login}`);
       res.json({ ...getRemoteStatus(), user: payload.user });
     } catch (err) {
@@ -392,19 +541,33 @@ export function mountGateway(app, { mode }) {
   });
 
   // --- the forwarding middleware ---
-  app.use((req, res, next) => {
+  app.use(async (req, res, next) => {
     // No remote configured at all: this install owns its own data, as before.
     if (!remoteConfig.url) return next();
     if (!isRemoteDataPath(req.path)) return next();
 
     // Configured but signed out (typically after the token was rejected). Do
-    // NOT fall through to the local database: silently serving a different,
-    // empty workspace reads as catastrophic data loss. Block and say why.
+    // NOT fall through to the local database: a rejected session is not the
+    // same as an absent server, and silently showing a different workspace
+    // instead of asking for a password reads as catastrophic data loss.
     if (!remoteConfig.token) {
       return res.status(401).json({
         error: `Not signed in to the shared server at ${remoteConfig.url}. Sign in from Settings to reach your projects and assets.`,
         remote: remoteConfig.url
       });
+    }
+
+    // Server switched off, unplugged, or not on this network. Checked BEFORE
+    // forwarding, because otherwise every request pays the TCP connect timeout
+    // — around 11 seconds each, which is what made an unreachable server look
+    // like a frozen application rather than a missing one.
+    if (!(await isRemoteReachable())) {
+      if (remoteConfig.offlineFallback) {
+        // Serve this machine's own data. The connection is kept, so forwarding
+        // resumes on its own as soon as the server answers again.
+        return next();
+      }
+      return offline(res);
     }
 
     if (req.path.startsWith('/assets') && (req.method === 'GET' || req.method === 'HEAD')) {

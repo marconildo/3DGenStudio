@@ -14,7 +14,14 @@ const EMPTY_STATUS = {
   login: '',
   user: null,
   role: null,
-  readOnly: false
+  readOnly: false,
+  // null when no server is configured; false when one is configured but is
+  // not answering right now. Comes from the backend probing the server, so it
+  // is true even before any data request has been tried.
+  reachable: null,
+  // Whether an unreachable server falls back to this machine's own data
+  // instead of pausing.
+  offlineFallback: true
 }
 
 // Slow on purpose. This is a background health signal, not something the user is
@@ -69,6 +76,15 @@ export function RemoteProvider({ children }) {
     }
   }, [refresh])
 
+  // Signing in, signing out and disconnecting each swap the workspace the app
+  // is showing -- a different set of projects, assets and workflows. Every open
+  // page, list and cached fetch in this window is describing the old one, and
+  // there is no meaningful way to patch them all up. Reloading is the simplest
+  // correct answer and what the user expects to see.
+  const reloadWindow = useCallback(() => {
+    window.location.reload()
+  }, [])
+
   const signIn = useCallback(async ({ url, login, password }) => {
     const res = await fetch(`${API_BASE}/remote/login`, {
       method: 'POST',
@@ -98,6 +114,20 @@ export function RemoteProvider({ children }) {
     return data
   }, [])
 
+  // What an unreachable server means: keep working against this computer's
+  // own data, or stop until it is back. Not a cosmetic preference -- the two
+  // show different workspaces.
+  const setOfflineFallback = useCallback(async (enabled) => {
+    const res = await fetch(`${API_BASE}/remote/offline-fallback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled })
+    })
+    const data = await res.json().catch(() => null)
+    if (data) setStatus({ ...EMPTY_STATUS, ...data })
+    return data
+  }, [])
+
   // Called by the error path of data requests. 503 means the gateway could not
   // reach the server; 401 means the stored session was rejected.
   const reportRequestFailure = useCallback((httpStatus) => {
@@ -112,9 +142,12 @@ export function RemoteProvider({ children }) {
     signIn,
     signOut,
     disconnect,
+    setOfflineFallback,
+    reloadWindow,
     refresh,
     reportRequestFailure
-  }), [status, loading, unreachable, signIn, signOut, disconnect, refresh, reportRequestFailure])
+  }), [status, loading, unreachable, signIn, signOut, disconnect, setOfflineFallback,
+    reloadWindow, refresh, reportRequestFailure])
 
   return <RemoteContext.Provider value={value}>{children}</RemoteContext.Provider>
 }

@@ -24,6 +24,8 @@
 !uploadQueue.js
 !logs.js
 !meshPivot.js
+!pgEmbedded.js
+!db/
 !version.json
 
 # mcp/ is imported statically by server.js, so it must resolve even though the
@@ -55,3 +57,9 @@ dist/
 .env
 .env.*
 .wiki-author
+
+# After the tools/ exclusion above, deliberately: the last matching rule wins,
+# so this negation has to come later than the directory it re-opens. Only the
+# one migration script, not the rest of tools/.
+!tools/migrate-sqlite-to-postgres.mjs
+

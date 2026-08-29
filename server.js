@@ -18,6 +18,8 @@ import tencentcloudSdk from 'tencentcloud-sdk-nodejs-intl-en';
 import { mountMcp } from './mcp/http.js';
 import { mountLogs } from './logs.js';
 import { moveGlbPivot, PIVOT_MODES } from './meshPivot.js';
+// The self-managed PostgreSQL for a shared server that is not running Docker.
+import * as pgEmbedded from './pgEmbedded.js';
 import { mountAuth, resolveJwtSecret, seedAdminFromEnv } from './auth.js';
 import { mountLocalOnlyGuard } from './serverMode.js';
 import { isGatewayActive, mountGateway } from './gateway.js';
@@ -79,6 +81,7 @@ import {
   getAssetOwnerId,
   getWorkflowRecordById,
   initializeStorage,
+  selectedDialect,
   listLibraryAssetsByType,
   listAllAssetTags,
   listAssetTags,
@@ -343,7 +346,6 @@ const HITEM_SUCCESS_STATUS = 'success';
 const HITEM_FAILURE_STATUSES = new Set(['failed', 'error', 'fail']);
 
 console.log('DEBUG: DATA_DIR is', DATA_DIR);
-console.log('DEBUG: DB_FILE is', path.join(DATA_DIR, 'app.db'));
 
 // Which half of the app this process is: 'local' runs everything (ComfyUI, the
 // Python sidecars, Settings), 'server' serves only the shared data routes for a
@@ -9884,7 +9886,51 @@ if (HAS_DIST) {
   });
 }
 
-initializeStorage().then(async () => {
+// Brings up the database the app is configured to use, before anything opens
+// it. Three cases:
+//
+//   GENSTUDIO_DATABASE_URL set  -> an external PostgreSQL (Docker Compose, or
+//                                  one you run yourself). Nothing to do here.
+//   GENSTUDIO_DATABASE=embedded -> 3D Gen Studio installs and runs its own
+//                                  PostgreSQL under the data directory. This is
+//                                  the shared-server path for a machine that is
+//                                  not running Docker.
+//   neither                     -> SQLite, which is every desktop install.
+async function bootstrapDatabase() {
+  const wantsEmbedded = String(process.env.GENSTUDIO_DATABASE || '').toLowerCase() === 'embedded';
+
+  if (wantsEmbedded && !process.env.GENSTUDIO_DATABASE_URL) {
+    if (!pgEmbedded.isAvailableHere()) {
+      throw new Error(pgEmbedded.unavailableReason());
+    }
+    // The first run downloads a few hundred megabytes, so say what is going on
+    // rather than looking hung.
+    const url = await pgEmbedded.start({
+      dataRoot: DATA_DIR,
+      onStatus: message => console.log(`🐘 ${message}`)
+    });
+    // storage.js reads this when it opens the database, which has not happened
+    // yet — the whole point of doing this first.
+    process.env.GENSTUDIO_DATABASE_URL = url;
+  }
+
+  if (selectedDialect() === 'postgres') {
+    console.log(`DEBUG: database is PostgreSQL${wantsEmbedded ? ' (managed by 3D Gen Studio)' : ''}`);
+  } else {
+    console.log('DEBUG: database is SQLite at', path.join(DATA_DIR, 'app.db'));
+  }
+}
+
+// Stop the embedded server with the app. Without this it survives as an orphan;
+// the next start adopts it rather than failing, but a machine slowly collecting
+// stray postgres processes is not a good look.
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.on(signal, () => {
+    pgEmbedded.stop().finally(() => process.exit(0));
+  });
+}
+
+bootstrapDatabase().then(() => initializeStorage()).then(async () => {
   // Server mode comes up usable without a shell: create the first admin from
   // the environment when the Users table is still empty. A no-op afterwards.
   if (SERVER_MODE === 'server') {
@@ -9966,4 +10012,11 @@ initializeStorage().then(async () => {
     );
     process.exit(1);
   });
+}).catch(err => {
+  // Without this, a storage failure becomes an unhandled rejection, which the
+  // global handler above deliberately survives -- so the process stayed alive
+  // having never started listening, and the only symptom was a server that
+  // answered nothing. A database that will not open is fatal, and says so.
+  console.error(`\n❌ ${err.message}\n`);
+  process.exit(1);
 });

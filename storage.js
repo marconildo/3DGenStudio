@@ -1,7 +1,28 @@
 import path from 'path';
 import process from 'process';
 import fs from 'fs/promises';
-import sqlite3 from 'sqlite3';
+// The SQL engine lives behind db/index.js: SQLite for a desktop install,
+// PostgreSQL when GENSTUDIO_DATABASE_URL is set for a shared server. Every
+// query below is written once and runs on both -- see db/postgres.js for the
+// three translations that make that true.
+import {
+  openDatabase,
+  closeDatabase,
+  run,
+  get,
+  all,
+  exec,
+  tableExists,
+  columnExists,
+  withTransaction,
+  withKeyLock,
+  isUniqueViolation,
+  selectedDialect
+} from './db/index.js';
+
+// Re-exported so server.js can report which engine is in use without importing
+// the db layer itself: storage.js stays the single door onto the database.
+export { selectedDialect };
 
 export const DATA_DIR = path.join(process.cwd(), 'data');
 export const DB_FILE = path.join(DATA_DIR, 'app.db');
@@ -17,7 +38,6 @@ export const WIKI_ASSETS_DIR = path.join(ASSETS_DIR, 'wiki');
 // Motions table for why.
 export const MOTION_ASSETS_DIR = path.join(ASSETS_DIR, 'motions');
 
-const sqlite = sqlite3.verbose();
 const DATA_ASSETS_PREFIX = 'data/assets/';
 const KANBAN_COLUMNS = [
   { id: 1, name: 'Images', position: 0 },
@@ -309,88 +329,6 @@ function mapGraphConnectionRow(row) {
 
 let dbPromise;
 
-function openDatabase(filename) {
-  return new Promise((resolve, reject) => {
-    const db = new sqlite.Database(filename, err => {
-      if (err) {
-        reject(err);
-        return;
-      }
-
-      resolve(db);
-    });
-  });
-}
-
-function closeDatabase(db) {
-  return new Promise((resolve, reject) => {
-    db.close(err => (err ? reject(err) : resolve()));
-  });
-}
-
-async function tableExists(db, tableName) {
-  const row = await get(
-    db,
-    `SELECT name
-     FROM sqlite_master
-     WHERE type = 'table' AND name = ?`,
-    [tableName]
-  );
-
-  return Boolean(row);
-}
-
-function run(db, sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.run(sql, params, function onRun(err) {
-      if (err) {
-        reject(err);
-        return;
-      }
-
-      resolve({ lastID: this.lastID, changes: this.changes });
-    });
-  });
-}
-
-function get(db, sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.get(sql, params, (err, row) => {
-      if (err) {
-        reject(err);
-        return;
-      }
-
-      resolve(row ?? null);
-    });
-  });
-}
-
-function all(db, sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.all(sql, params, (err, rows) => {
-      if (err) {
-        reject(err);
-        return;
-      }
-
-      resolve(rows ?? []);
-    });
-  });
-}
-
-function exec(db, sql) {
-  return new Promise((resolve, reject) => {
-    db.exec(sql, err => {
-      if (err) {
-        reject(err);
-        return;
-      }
-
-      resolve();
-    });
-  });
-}
 
 function parseJson(value, fallback) {
   if (!value) return fallback;
@@ -638,12 +576,13 @@ async function migrateLegacyAssetEditsToAssets(db) {
 async function backfillAssetProjectLinks(db) {
   await run(
     db,
-    `INSERT OR IGNORE INTO Assets_Projects (assetId, projectId, addedAt)
+    `INSERT INTO Assets_Projects (assetId, projectId, addedAt)
      SELECT DISTINCT ca.assetId, c.projectId, COALESCE(a.creationDate, 0)
      FROM Cards_Assets ca
      JOIN Cards c ON c.id = ca.cardId
      JOIN Assets a ON a.id = ca.assetId
-     WHERE c.projectId IS NOT NULL`
+     WHERE c.projectId IS NOT NULL
+     ON CONFLICT DO NOTHING`
   );
 
   // Propagate every link down the full parentId tree, so edits/versions land in
@@ -655,11 +594,12 @@ async function backfillAssetProjectLinks(db) {
   do {
     const result = await run(
       db,
-      `INSERT OR IGNORE INTO Assets_Projects (assetId, projectId, addedAt)
+      `INSERT INTO Assets_Projects (assetId, projectId, addedAt)
        SELECT child.id, ap.projectId, COALESCE(child.creationDate, 0)
        FROM Assets child
        JOIN Assets_Projects ap ON ap.assetId = child.parentId
-       WHERE child.parentId IS NOT NULL`
+       WHERE child.parentId IS NOT NULL
+       ON CONFLICT DO NOTHING`
     );
     inserted = result?.changes ?? 0;
     guard += 1;
@@ -698,7 +638,7 @@ async function linkAssetToProject(db, assetId, projectId, { cascadeChildren = fa
 
   await run(
     db,
-    'INSERT OR IGNORE INTO Assets_Projects (assetId, projectId, addedAt) VALUES (?, ?, ?)',
+    'INSERT INTO Assets_Projects (assetId, projectId, addedAt) VALUES (?, ?, ?) ON CONFLICT DO NOTHING',
     [normalizedAssetId, normalizedProjectId, Date.now()]
   );
 
@@ -737,8 +677,9 @@ async function unlinkAssetFromProject(db, assetId, projectId, { cascadeChildren 
 async function inheritProjectLinks(db, fromAssetId, toAssetId) {
   await run(
     db,
-    `INSERT OR IGNORE INTO Assets_Projects (assetId, projectId, addedAt)
-     SELECT ?, projectId, ? FROM Assets_Projects WHERE assetId = ?`,
+    `INSERT INTO Assets_Projects (assetId, projectId, addedAt)
+     SELECT ?, projectId, ? FROM Assets_Projects WHERE assetId = ?
+     ON CONFLICT DO NOTHING`,
     [Number(toAssetId), Date.now(), Number(fromAssetId)]
   );
 }
@@ -838,10 +779,10 @@ export async function unlinkAssetFromProjectById(projectId, assetId, { cascadeCh
     );
 
     for (const link of links) {
-      await normalizeCardAssetPositions(link.cardId);
+      await normalizeCardAssetPositions(db, link.cardId);
     }
 
-    await deleteCardsIfEmpty(links.map(link => link.cardId));
+    await deleteCardsIfEmpty(db, links.map(link => link.cardId));
   }
 
   return { status: 'unlinked', remainingProjectIds: await listAssetProjectIds(asset.id) };
@@ -943,7 +884,7 @@ export async function setAssetTags(assetId, tags = []) {
   for (const tag of normalized) {
     await run(
       db,
-      'INSERT OR IGNORE INTO Assets_Tags (assetId, tag, addedAt) VALUES (?, ?, ?)',
+      'INSERT INTO Assets_Tags (assetId, tag, addedAt) VALUES (?, ?, ?) ON CONFLICT DO NOTHING',
       [asset.id, tag, addedAt]
     );
   }
@@ -966,7 +907,7 @@ export async function addAssetTags(assetId, tags = []) {
   for (const tag of normalizeTagList(tags)) {
     await run(
       db,
-      'INSERT OR IGNORE INTO Assets_Tags (assetId, tag, addedAt) VALUES (?, ?, ?)',
+      'INSERT INTO Assets_Tags (assetId, tag, addedAt) VALUES (?, ?, ?) ON CONFLICT DO NOTHING',
       [asset.id, tag, addedAt]
     );
   }
@@ -1150,7 +1091,7 @@ async function listChildAssetsByParentFilePaths(db, parentFilePaths = [], assetT
               SELECT ap.projectId
               FROM Assets_Projects ap
               WHERE ap.assetId = parent.id
-              ORDER BY ap.addedAt DESC, ap.projectId DESC
+              ORDER BY ap.addedAt DESC NULLS LAST, ap.projectId DESC NULLS LAST
               LIMIT 1
             ) AS parentProjectId
      FROM Assets child
@@ -1264,7 +1205,7 @@ async function seedReferenceTables(db) {
 
   await run(
     db,
-    'INSERT OR IGNORE INTO Settings (id, json) VALUES (1, ?)',
+    'INSERT INTO Settings (id, json) VALUES (1, ?) ON CONFLICT DO NOTHING',
     [JSON.stringify(DEFAULT_SETTINGS)]
   );
 }
@@ -1296,7 +1237,7 @@ async function backupLegacyDbIfNeeded() {
     return; // fresh install, nothing to back up
   }
 
-  const probe = await openDatabase(DB_FILE);
+  const probe = await openDatabase({ file: DB_FILE });
   let isLegacy = false;
   try {
     isLegacy = await tableExists(probe, 'Nodes');
@@ -1382,7 +1323,7 @@ async function migrateNodesIntoCards(db) {
       const newCardId = result.lastID;
       nodeToCard.set(node.id, newCardId);
       if (node.assetId != null) {
-        await run(db, 'INSERT OR IGNORE INTO Cards_Assets (cardId, assetId, position) VALUES (?, ?, 0)', [newCardId, node.assetId]);
+        await run(db, 'INSERT INTO Cards_Assets (cardId, assetId, position) VALUES (?, ?, 0) ON CONFLICT DO NOTHING', [newCardId, node.assetId]);
       }
     }
 
@@ -1444,7 +1385,7 @@ async function migrateNodesIntoCards(db) {
       if (sourceCardId == null || targetCardId == null) continue;
       await run(
         db,
-        'INSERT OR IGNORE INTO Connections (sourceCardId, targetCardId, inputId, outputId) VALUES (?, ?, ?, ?)',
+        'INSERT INTO Connections (sourceCardId, targetCardId, inputId, outputId) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING',
         [sourceCardId, targetCardId, conn.inputId, conn.outputId]
       );
     }
@@ -1464,45 +1405,11 @@ async function migrateNodesIntoCards(db) {
   }
 }
 
-export async function initializeStorage() {
-  await fs.mkdir(DATA_DIR, { recursive: true });
-  await fs.mkdir(ASSETS_DIR, { recursive: true });
-  await fs.mkdir(IMAGE_ASSETS_DIR, { recursive: true });
-  await fs.mkdir(MESH_ASSETS_DIR, { recursive: true });
-  await fs.mkdir(THUMBNAIL_ASSETS_DIR, { recursive: true });
-  await fs.mkdir(WORKFLOW_ASSETS_DIR, { recursive: true });
-  await fs.mkdir(BRUSH_ASSETS_DIR, { recursive: true });
-  await fs.mkdir(PAINT_DOCS_DIR, { recursive: true });
-  await fs.mkdir(WIKI_ASSETS_DIR, { recursive: true });
-  await fs.mkdir(MOTION_ASSETS_DIR, { recursive: true });
-
-  // Back up the DB before the one-time Nodes→Cards migration touches it.
-  await backupLegacyDbIfNeeded();
-
-  const db = await openDatabase(DB_FILE);
-  await exec(db, 'PRAGMA foreign_keys = ON');
-
-  // Multi-user / server mode: WAL lets readers run concurrently with a writer,
-  // and busy_timeout makes a contended write wait instead of failing outright.
-  // journal_mode is persisted in the database file; the others are per-connection.
-  await exec(db, 'PRAGMA journal_mode = WAL').catch(() => {});
-  await exec(db, 'PRAGMA busy_timeout = 5000').catch(() => {});
-  await exec(db, 'PRAGMA synchronous = NORMAL').catch(() => {});
-
-  // Migrate the legacy split schema (Nodes/Connections/KanbanColumns) into the
-  // unified Cards model BEFORE the CREATE TABLE IF NOT EXISTS block, so the
-  // new-schema statements don't create empty tables alongside the legacy ones
-  // (e.g. a fresh Columns table beside the still-named KanbanColumns).
-  await migrateNodesIntoCards(db);
-
-  // Captured BEFORE the CREATE TABLE block below so we can tell a database that
-  // predates Assets_Projects (needs the one-time backfill) from one that already
-  // has it (where a re-backfill would resurrect links the user has since removed).
-  const hadAssetProjectsTable = await tableExists(db, 'Assets_Projects');
-
-  await exec(
-    db,
-    `
+// The SQLite schema, and the source of truth for both engines: PostgreSQL runs
+// db/schema.pg.sql, which tools/gen-pg-schema.mjs generates from exactly this
+// text. Regenerate after changing anything here, or the two engines drift and
+// the difference only shows up on whichever deployment nobody tested.
+const SQLITE_SCHEMA = `
     -- ownerId on Projects and Assets: on a shared server everything belongs to
     -- the user who made it, and nobody sees anyone else's -- administrators
     -- excepted, who see everything.
@@ -1768,8 +1675,90 @@ export async function initializeStorage() {
       PRIMARY KEY(assetId, tag),
       FOREIGN KEY(assetId) REFERENCES Assets(id) ON DELETE CASCADE
     );
-    `
+`;
+
+// Refuses to start a PostgreSQL server that has no data while a populated
+// SQLite file is sitting right there.
+//
+// The failure this prevents: an existing deployment adds a database service,
+// restarts, and the app comes up perfectly healthy and completely empty. Every
+// project looks deleted. Nothing is actually lost -- app.db is untouched -- but
+// there is no way to tell that from the UI, and the natural next move is to
+// start recreating work by hand.
+async function guardAgainstUnmigratedData(db) {
+  if (db.dialect !== 'postgres') return;
+  if (process.env.GENSTUDIO_ALLOW_EMPTY_DATABASE === '1') return;
+
+  const legacyExists = await fs.access(DB_FILE).then(() => true).catch(() => false);
+  if (!legacyExists) return;
+
+  const projects = await get(db, 'SELECT COUNT(*) AS total FROM Projects');
+  if (Number(projects?.total ?? 0) > 0) return;
+
+  throw new Error(
+    `The PostgreSQL database is empty, but ${DB_FILE} still holds data.\n\n` +
+    '   Refusing to start, because an empty workspace is indistinguishable from\n' +
+    '   losing everything. Migrate the existing data first:\n\n' +
+    '     node tools/migrate-sqlite-to-postgres.mjs --from ./data/app.db --to $GENSTUDIO_DATABASE_URL\n\n' +
+    '   If the empty database is intentional, set GENSTUDIO_ALLOW_EMPTY_DATABASE=1.'
   );
+}
+
+async function createSchema(db) {
+  if (db.dialect === 'postgres') {
+    // Read rather than inlined so there is one generated artifact to inspect,
+    // diff and hand to psql. It has to travel with the app: see the Dockerfile
+    // COPY list, .dockerignore and electron-builder.yml.
+    const schemaFile = new URL('./db/schema.pg.sql', import.meta.url);
+    await exec(db, await fs.readFile(schemaFile, 'utf8'));
+    return;
+  }
+
+  await exec(db, SQLITE_SCHEMA);
+}
+
+export async function initializeStorage() {
+  await fs.mkdir(DATA_DIR, { recursive: true });
+  await fs.mkdir(ASSETS_DIR, { recursive: true });
+  await fs.mkdir(IMAGE_ASSETS_DIR, { recursive: true });
+  await fs.mkdir(MESH_ASSETS_DIR, { recursive: true });
+  await fs.mkdir(THUMBNAIL_ASSETS_DIR, { recursive: true });
+  await fs.mkdir(WORKFLOW_ASSETS_DIR, { recursive: true });
+  await fs.mkdir(BRUSH_ASSETS_DIR, { recursive: true });
+  await fs.mkdir(PAINT_DOCS_DIR, { recursive: true });
+  await fs.mkdir(WIKI_ASSETS_DIR, { recursive: true });
+  await fs.mkdir(MOTION_ASSETS_DIR, { recursive: true });
+
+  // Back up the DB before the one-time Nodes→Cards migration touches it. That
+  // migration only ever applies to a SQLite file that predates the unified Cards
+  // model; a PostgreSQL database is created fresh from the current schema or
+  // filled by tools/migrate-sqlite-to-postgres.mjs, so it cannot be in that state.
+  if (selectedDialect() === 'sqlite') {
+    await backupLegacyDbIfNeeded();
+  }
+
+  // Connection pragmas (SQLite) and the connectivity check (PostgreSQL) both
+  // happen inside the driver, because they have nothing in common beyond when
+  // they run.
+  const db = await openDatabase({ file: DB_FILE });
+
+  // Migrate the legacy split schema (Nodes/Connections/KanbanColumns) into the
+  // unified Cards model BEFORE the CREATE TABLE IF NOT EXISTS block, so the
+  // new-schema statements don't create empty tables alongside the legacy ones
+  // (e.g. a fresh Columns table beside the still-named KanbanColumns).
+  await migrateNodesIntoCards(db);
+
+  // Captured BEFORE the CREATE TABLE block below so we can tell a database that
+  // predates Assets_Projects (needs the one-time backfill) from one that already
+  // has it (where a re-backfill would resurrect links the user has since removed).
+  const hadAssetProjectsTable = await tableExists(db, 'Assets_Projects');
+
+  await createSchema(db);
+
+  // Before ANY write. Seeding the reference tables first would leave rows behind
+  // on a start that is about to be refused, and the migration tool would then
+  // see a non-empty target and refuse in turn.
+  await guardAgainstUnmigratedData(db);
 
   await run(db, 'CREATE INDEX IF NOT EXISTS idx_wikipages_parentId ON WikiPages(parentId)');
   await run(db, 'CREATE INDEX IF NOT EXISTS idx_boards_projectId ON Boards(projectId)');
@@ -1777,37 +1766,23 @@ export async function initializeStorage() {
   await run(db, 'CREATE INDEX IF NOT EXISTS idx_assets_tags_tag ON Assets_Tags(tag)');
   await run(db, 'CREATE INDEX IF NOT EXISTS idx_motions_createdAt ON Motions(createdAt)');
 
-  const assetColumns = await all(db, 'PRAGMA table_info(Assets)');
-  if (!assetColumns.some(column => column.name === 'thumbnail')) {
-    await run(db, 'ALTER TABLE Assets ADD COLUMN thumbnail TEXT');
-  }
-  if (!assetColumns.some(column => column.name === 'width')) {
-    await run(db, 'ALTER TABLE Assets ADD COLUMN width INTEGER NOT NULL DEFAULT 0');
-  }
-  if (!assetColumns.some(column => column.name === 'height')) {
-    await run(db, 'ALTER TABLE Assets ADD COLUMN height INTEGER NOT NULL DEFAULT 0');
-  }
+  // Columns added after the fact, each probed rather than versioned. A fresh
+  // PostgreSQL schema already has all of them, so every branch here is simply
+  // false there -- the cost is one information_schema lookup per column at
+  // startup, which is not worth a schema_version table to avoid.
+  const addColumnIfMissing = async (table, column, definition) => {
+    if (await columnExists(db, table, column)) return;
+    await run(db, `ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  };
 
-  if (!assetColumns.some(column => column.name === 'parentId')) {
-    await run(db, 'ALTER TABLE Assets ADD COLUMN parentId INTEGER');
-  }
-
-  if (!assetColumns.some(column => column.name === 'ownerId')) {
-    await run(db, 'ALTER TABLE Assets ADD COLUMN ownerId INTEGER');
-  }
-
-  const workflowConfigColumns = await all(db, 'PRAGMA table_info(WorkflowConfigs)');
-  if (!workflowConfigColumns.some(column => column.name === 'ownerId')) {
-    await run(db, 'ALTER TABLE WorkflowConfigs ADD COLUMN ownerId INTEGER');
-  }
-
-  const projectColumns = await all(db, 'PRAGMA table_info(Projects)');
-  if (!projectColumns.some(column => column.name === 'graphViewport')) {
-    await run(db, 'ALTER TABLE Projects ADD COLUMN graphViewport TEXT');
-  }
-  if (!projectColumns.some(column => column.name === 'ownerId')) {
-    await run(db, 'ALTER TABLE Projects ADD COLUMN ownerId INTEGER');
-  }
+  await addColumnIfMissing('Assets', 'thumbnail', 'TEXT');
+  await addColumnIfMissing('Assets', 'width', 'INTEGER NOT NULL DEFAULT 0');
+  await addColumnIfMissing('Assets', 'height', 'INTEGER NOT NULL DEFAULT 0');
+  await addColumnIfMissing('Assets', 'parentId', 'INTEGER');
+  await addColumnIfMissing('Assets', 'ownerId', 'INTEGER');
+  await addColumnIfMissing('WorkflowConfigs', 'ownerId', 'INTEGER');
+  await addColumnIfMissing('Projects', 'graphViewport', 'TEXT');
+  await addColumnIfMissing('Projects', 'ownerId', 'INTEGER');
 
   await run(db, 'CREATE INDEX IF NOT EXISTS idx_assets_parentId ON Assets(parentId)');
   // Every scoped listing filters on these, so they are read on nearly every request.
@@ -1816,6 +1791,18 @@ export async function initializeStorage() {
   await run(db, 'CREATE INDEX IF NOT EXISTS idx_cards_projectId ON Cards(projectId)');
   await run(db, 'CREATE INDEX IF NOT EXISTS idx_connections_sourceCardId ON Connections(sourceCardId)');
   await run(db, 'CREATE INDEX IF NOT EXISTS idx_connections_targetCardId ON Connections(targetCardId)');
+
+  // Deleting an asset row does not delete its bytes: several rows can legitimately
+  // share one filePath (a mesh-editor save overwrites the source .glb in place, and
+  // versions inherit paths), so the delete paths ask "does any surviving row still
+  // point at this file?" before fs.rm. Without these two that probe is a full scan of
+  // Assets, once per deleted path, inside a loop.
+  await run(db, 'CREATE INDEX IF NOT EXISTS idx_assets_filePath ON Assets(filePath)');
+  await run(db, 'CREATE INDEX IF NOT EXISTS idx_assets_thumbnail ON Assets(thumbnail)');
+  // PRIMARY KEY(cardId, assetId) already covers cardId but not assetId, and the
+  // assetId foreign key is ON DELETE RESTRICT - so every asset deletion scans this
+  // table looking for referrers.
+  await run(db, 'CREATE INDEX IF NOT EXISTS idx_cards_assets_assetId ON Cards_Assets(assetId)');
 
   await migrateLegacyAssetEditsToAssets(db);
 
@@ -1981,8 +1968,33 @@ async function getAssetTypeIdByName(name) {
   return row.id;
 }
 
-async function getNextCardPosition(projectId, kanbanColumnId) {
-  const db = await getDb();
+// Retries an allocate-then-insert when someone else claimed the same key first.
+//
+// Every allocator below reads MAX(position) + 1 and then inserts against a
+// UNIQUE constraint. Under SQLite that could never race: the whole process
+// shared one connection, so the read and the insert could not be interleaved
+// with another request. A PostgreSQL pool runs requests genuinely in parallel,
+// so two people adding a card to the same column at the same moment now pick
+// the same position and one of them loses. Re-reading and retrying is correct
+// and cheap; the alternative is locking a whole column per insert.
+//
+// A conflict that is NOT a race -- a genuinely duplicate clientKey, say -- will
+// simply fail every attempt and surface as it did before.
+async function withUniqueRetry(label, attempt, attempts = 5) {
+  for (let tries = 1; ; tries += 1) {
+    try {
+      return await attempt();
+    } catch (err) {
+      if (!isUniqueViolation(err) || tries >= attempts) throw err;
+      console.warn(`[db] ${label}: unique conflict on attempt ${tries}, retrying`);
+    }
+  }
+}
+
+// Takes the handle rather than fetching one: this runs inside withKeyLock, and
+// asking the pool for another connection while holding one is how a pool
+// deadlocks itself.
+async function getNextCardPosition(db, projectId, kanbanColumnId) {
   const row = await get(
     db,
     'SELECT COALESCE(MAX(position), -1) + 1 AS nextPosition FROM Cards WHERE projectId = ? AND kanbanColumnId = ?',
@@ -1992,8 +2004,7 @@ async function getNextCardPosition(projectId, kanbanColumnId) {
   return row?.nextPosition ?? 0;
 }
 
-async function getNextCardAttributePosition(cardId) {
-  const db = await getDb();
+async function getNextCardAttributePosition(db, cardId) {
   const row = await get(
     db,
     'SELECT COALESCE(MAX(position), -1) + 1 AS nextPosition FROM Cards_Attributes WHERE cardId = ?',
@@ -2025,8 +2036,7 @@ async function resolveProjectCard(projectId, externalCardId = null) {
   );
 }
 
-async function getNextCardAssetPosition(cardId) {
-  const db = await getDb();
+async function getNextCardAssetPosition(db, cardId) {
   const row = await get(
     db,
     'SELECT COALESCE(MAX(position), -1) + 1 AS nextPosition FROM Cards_Assets WHERE cardId = ?',
@@ -2069,25 +2079,32 @@ async function ensureCard(projectId, columnName, externalCardId = null, values =
 
   const kanbanColumnId = await getKanbanColumnIdByName(columnName);
 
-  const position = await getNextCardPosition(normalizedProjectId, kanbanColumnId);
   const clientKey = externalCardId && !/^\d+$/.test(String(externalCardId)) ? String(externalCardId) : null;
   const metadata = JSON.stringify(values.metadata || {});
-  const result = await run(
-    db,
-    `INSERT INTO Cards (projectId, kanbanColumnId, clientKey, name, position, creationDate, status, progress, metadata)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      normalizedProjectId,
-      kanbanColumnId,
-      clientKey,
-      values.name || null,
-      position,
-      values.creationDate || Date.now(),
-      values.status || null,
-      values.progress ?? null,
-      metadata
-    ]
-  );
+  // The position has to be re-read on each attempt: that is the value another
+  // request just took, and reusing the stale one would fail identically forever.
+  const result = await withUniqueRetry('ensureCard', () =>
+    // One column at a time: the position is derived from the rows already in it,
+    // so two callers must not be inside this window together.
+    withKeyLock(db, `card:${normalizedProjectId}:${kanbanColumnId}`, async tx => {
+      const position = await getNextCardPosition(tx, normalizedProjectId, kanbanColumnId);
+      return run(
+        tx,
+        `INSERT INTO Cards (projectId, kanbanColumnId, clientKey, name, position, creationDate, status, progress, metadata)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          normalizedProjectId,
+          kanbanColumnId,
+          clientKey,
+          values.name || null,
+          position,
+          values.creationDate || Date.now(),
+          values.status || null,
+          values.progress ?? null,
+          metadata
+        ]
+      );
+    }));
 
   return {
     id: result.lastID,
@@ -2124,8 +2141,10 @@ function buildNextCardMetadata(existingMetadata = {}, processing = null) {
   return nextMetadata;
 }
 
-async function normalizeCardPositions(projectId, kanbanColumnId) {
-  const db = await getDb();
+// Takes an explicit db so it can run inside a caller's transaction. On a
+// PostgreSQL pool, fetching its own handle would put these writes on another
+// connection, outside the transaction that is reordering the column.
+async function normalizeCardPositions(db, projectId, kanbanColumnId) {
   const rows = await all(
     db,
     `SELECT id
@@ -2156,8 +2175,7 @@ async function applyCardOrder(db, orderedCards = []) {
   }
 }
 
-async function normalizeCardAssetPositions(cardId) {
-  const db = await getDb();
+async function normalizeCardAssetPositions(db, cardId) {
   const rows = await all(
     db,
     'SELECT assetId FROM Cards_Assets WHERE cardId = ? ORDER BY position ASC, assetId ASC',
@@ -2173,8 +2191,7 @@ async function normalizeCardAssetPositions(cardId) {
   }
 }
 
-async function normalizeCardAttributePositions(cardId) {
-  const db = await getDb();
+async function normalizeCardAttributePositions(db, cardId) {
   const rows = await all(
     db,
     'SELECT position FROM Cards_Attributes WHERE cardId = ? ORDER BY position ASC',
@@ -2274,7 +2291,10 @@ async function getAssetViewById(assetId, { projectId = null } = {}) {
      FROM Assets a
      JOIN AssetTypes at ON at.id = a.assetTypeId
      LEFT JOIN Cards_Assets ca ON ca.assetId = a.id
-     LEFT JOIN Cards c ON c.id = ca.cardId AND (? IS NULL OR c.projectId = ?)
+     -- CAST, not a bare placeholder: in "? IS NULL" PostgreSQL has nothing to
+     -- infer a type from and refuses the whole statement with 42P18. CAST(... AS
+     -- BIGINT) is understood by both engines, unlike the ::bigint shorthand.
+     LEFT JOIN Cards c ON c.id = ca.cardId AND (CAST(? AS BIGINT) IS NULL OR c.projectId = ?)
      LEFT JOIN Columns kc ON kc.id = c.kanbanColumnId
      WHERE a.id = ?
      ORDER BY (c.id IS NULL) ASC, ca.position ASC
@@ -2679,7 +2699,7 @@ export async function listProjects(viewerId = null) {
      FROM Projects p
      LEFT JOIN Users u ON u.id = p.ownerId
      WHERE 1 = 1${clause}
-     ORDER BY p.creationDate DESC`,
+     ORDER BY p.creationDate DESC, p.id DESC`,
     params
   );
   return rows.map(mapProjectRow);
@@ -2687,23 +2707,36 @@ export async function listProjects(viewerId = null) {
 
 export async function createProject(projectData = {}) {
   const db = await getDb();
-  const project = {
-    id: Date.now(),
-    name: projectData.name || 'Untitled Project',
-    description: projectData.description || '',
-    preset: projectData.preset || '',
-    createdAt: Date.now(),
-    status: projectData.status || 'active',
-    ownerId: ownerScope(projectData.ownerId)
-  };
 
-  await run(
-    db,
-    'INSERT INTO Projects (id, name, description, preset, creationDate, status, ownerId) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    [project.id, project.name, project.description, project.preset, project.createdAt, project.status, project.ownerId]
-  );
+  // A project id is a millisecond timestamp rather than a sequence, so two
+  // projects created in the same millisecond collide on the primary key.
+  // allocateProjectId probes for a free one; the retry is what covers the gap
+  // between that probe and the insert, which only exists once requests really
+  // run in parallel.
+  return withUniqueRetry('createProject', () =>
+    // Serialised, because probing for a free id and then inserting it is only
+    // meaningful if no one else is doing the same thing in between. Retrying
+    // alone is not enough: everyone who loses re-probes the same millisecond and
+    // collides again, so the conflicts multiply with the number of callers.
+    withKeyLock(db, 'projectId', async tx => {
+      const project = {
+        id: await allocateProjectId(tx),
+        name: projectData.name || 'Untitled Project',
+        description: projectData.description || '',
+        preset: projectData.preset || '',
+        createdAt: Date.now(),
+        status: projectData.status || 'active',
+        ownerId: ownerScope(projectData.ownerId)
+      };
 
-  return project;
+      await run(
+        tx,
+        'INSERT INTO Projects (id, name, description, preset, creationDate, status, ownerId) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [project.id, project.name, project.description, project.preset, project.createdAt, project.status, project.ownerId]
+      );
+
+      return project;
+    }));
 }
 
 export async function updateProject(projectId, updates = {}) {
@@ -2847,7 +2880,7 @@ export async function listProjectTasks(projectId) {
      FROM Cards c
      JOIN Columns kc ON kc.id = c.kanbanColumnId
      WHERE c.projectId = ? AND kc.name = 'Mesh Gen'
-     ORDER BY c.position ASC`,
+     ORDER BY c.position ASC NULLS FIRST`,
     [projectId]
   );
 
@@ -2862,7 +2895,7 @@ export async function listProjectCards(projectId) {
      FROM Cards c
      JOIN Columns kc ON kc.id = c.kanbanColumnId
      WHERE c.projectId = ?
-     ORDER BY c.kanbanColumnId ASC, c.position ASC, c.creationDate ASC, c.id ASC`,
+     ORDER BY c.kanbanColumnId ASC NULLS FIRST, c.position ASC NULLS FIRST, c.creationDate ASC NULLS FIRST, c.id ASC NULLS FIRST`,
     [projectId]
   );
 
@@ -2918,9 +2951,9 @@ async function setNodeCardAsset(db, cardId, assetId) {
         [Number(assetId), ...affected]
       );
       for (const cid of affected) {
-        await normalizeCardAssetPositions(cid);
+        await normalizeCardAssetPositions(db, cid);
       }
-      await deleteCardsIfEmpty(affected);
+      await deleteCardsIfEmpty(db, affected);
     }
   }
 
@@ -3150,7 +3183,7 @@ export async function deleteProjectConnection(projectId, {
 // links it (resolveEditableSourceReference / createProjectAsset both do), but
 // picks made before that fix left the asset referenced-but-not-owned, so it was
 // invisible to everything that works from Assets_Projects — the exporter most of
-// all. Idempotent: linkAssetToProject is an INSERT OR IGNORE, so this is a no-op
+// all. Idempotent: linkAssetToProject inserts ON CONFLICT DO NOTHING, so this is a
 // once every reference is already linked.
 async function backfillBatchInputAssetLinks(db) {
   const rows = await all(db, 'SELECT projectId, stateJson FROM BatchConfigs');
@@ -3692,7 +3725,7 @@ export async function listProjectAssets(projectId = null, { includeChildren = fa
      LEFT JOIN Cards c ON c.id = ca.cardId
      LEFT JOIN Columns kc ON kc.id = c.kanbanColumnId
      ${whereClause}
-     ORDER BY c.kanbanColumnId ASC, c.position ASC, ca.position ASC, a.creationDate DESC`,
+     ORDER BY c.kanbanColumnId ASC NULLS FIRST, c.position ASC NULLS FIRST, ca.position ASC NULLS FIRST, a.creationDate DESC NULLS LAST, a.id DESC NULLS LAST`,
     params
   );
 
@@ -3795,12 +3828,16 @@ export async function createCardAttribute(projectId, externalCardId, { attribute
   }
 
   const db = await getDb();
-  const position = await getNextCardAttributePosition(card.id);
-  await run(
-    db,
-    'INSERT INTO Cards_Attributes (cardId, position, attributeTypeId, attributeValue) VALUES (?, ?, ?, ?)',
-    [card.id, position, attributeType.id, attributeValue]
-  );
+  const position = await withUniqueRetry('createCardAttribute', () =>
+    withKeyLock(db, `cardAttribute:${card.id}`, async tx => {
+      const next = await getNextCardAttributePosition(tx, card.id);
+      await run(
+        tx,
+        'INSERT INTO Cards_Attributes (cardId, position, attributeTypeId, attributeValue) VALUES (?, ?, ?, ?)',
+        [card.id, next, attributeType.id, attributeValue]
+      );
+      return next;
+    }));
 
   return await getCardAttributeView(card.id, position);
 }
@@ -3936,7 +3973,7 @@ export async function deleteCardAttribute(projectId, externalCardId, position) {
   }
 
   await run(db, 'DELETE FROM Cards_Attributes WHERE cardId = ? AND position = ?', [card.id, position]);
-  await normalizeCardAttributePositions(card.id);
+  await normalizeCardAttributePositions(db, card.id);
 
   return { status: 'deleted' };
 }
@@ -3953,7 +3990,7 @@ export async function deleteCard(projectId, externalCardId) {
   await run(db, 'DELETE FROM Cards_Assets WHERE cardId = ?', [card.id]);
   await run(db, 'DELETE FROM Cards_Attributes WHERE cardId = ?', [card.id]);
   await run(db, 'DELETE FROM Cards WHERE id = ?', [card.id]);
-  await normalizeCardPositions(normalizedProjectId, card.kanbanColumnId);
+  await normalizeCardPositions(db, normalizedProjectId, card.kanbanColumnId);
 
   return { status: 'deleted' };
 }
@@ -3971,22 +4008,25 @@ export async function moveCard(projectId, externalCardId, kanbanColumnId, positi
     throw new Error('Kanban column not found');
   }
 
-  await exec(db, 'BEGIN TRANSACTION');
-
-  try {
-    await normalizeCardPositions(projectId, card.kanbanColumnId);
+  // Reordering a column rewrites every position in it, and UNIQUE(projectId,
+  // kanbanColumnId, position) means a half-applied reorder is not a valid state
+  // to leave behind. withTransaction hands back a handle bound to one
+  // connection -- on a PostgreSQL pool, BEGIN on the pool itself would open the
+  // transaction on one connection and run the body on others.
+  await withTransaction(db, async tx => {
+    await normalizeCardPositions(tx, projectId, card.kanbanColumnId);
     if (card.kanbanColumnId !== kanbanColumnId) {
-      await normalizeCardPositions(projectId, kanbanColumnId);
+      await normalizeCardPositions(tx, projectId, kanbanColumnId);
     }
 
     const currentCard = await get(
-      db,
+      tx,
       'SELECT id, clientKey, kanbanColumnId, position FROM Cards WHERE id = ? AND projectId = ?',
       [card.id, projectId]
     );
 
     const destinationCountRow = await get(
-      db,
+      tx,
       `SELECT COUNT(*) AS total
        FROM Cards
        WHERE projectId = ? AND kanbanColumnId = ? AND id != ?`,
@@ -3996,7 +4036,7 @@ export async function moveCard(projectId, externalCardId, kanbanColumnId, positi
     const nextPosition = Math.max(0, Math.min(Number(position) || 0, maxDestinationPosition));
 
     const sourceCards = await all(
-      db,
+      tx,
       `SELECT id
        FROM Cards
        WHERE projectId = ? AND kanbanColumnId = ? AND id != ?
@@ -4015,16 +4055,16 @@ export async function moveCard(projectId, externalCardId, kanbanColumnId, positi
         kanbanColumnId
       });
 
-      await applyCardOrder(db, orderedCards);
+      await applyCardOrder(tx, orderedCards);
     } else {
       await run(
-        db,
+        tx,
         'UPDATE Cards SET position = ? WHERE id = ?',
         [-(1000000 + currentCard.id), currentCard.id]
       );
 
       const destinationCards = await all(
-        db,
+        tx,
         `SELECT id
          FROM Cards
          WHERE projectId = ? AND kanbanColumnId = ? AND id != ?
@@ -4032,7 +4072,7 @@ export async function moveCard(projectId, externalCardId, kanbanColumnId, positi
         [projectId, kanbanColumnId, card.id]
       );
 
-      await applyCardOrder(db, sourceCards.map(sourceCard => ({
+      await applyCardOrder(tx, sourceCards.map(sourceCard => ({
         id: sourceCard.id,
         kanbanColumnId: currentCard.kanbanColumnId
       })));
@@ -4047,16 +4087,12 @@ export async function moveCard(projectId, externalCardId, kanbanColumnId, positi
         kanbanColumnId
       });
 
-      await applyCardOrder(db, orderedDestinationCards);
+      await applyCardOrder(tx, orderedDestinationCards);
     }
 
-    await normalizeCardPositions(projectId, currentCard.kanbanColumnId);
-    await normalizeCardPositions(projectId, kanbanColumnId);
-    await exec(db, 'COMMIT');
-  } catch (err) {
-    await exec(db, 'ROLLBACK').catch(() => null);
-    throw err;
-  }
+    await normalizeCardPositions(tx, projectId, currentCard.kanbanColumnId);
+    await normalizeCardPositions(tx, projectId, kanbanColumnId);
+  });
 
   return await resolveProjectCard(projectId, externalCardId);
 }
@@ -4095,13 +4131,15 @@ export async function createProjectAsset({ projectId, type, name, filePath, thum
   await linkAssetToProject(db, assetId, normalizedProjectId);
 
   if (card) {
-    const position = await getNextCardAssetPosition(card.id);
-
-    await run(
-      db,
-      'INSERT INTO Cards_Assets (cardId, assetId, position) VALUES (?, ?, ?)',
-      [card.id, assetId, position]
-    );
+    await withUniqueRetry('createProjectAsset', () =>
+      withKeyLock(db, `cardAsset:${card.id}`, async tx => {
+        const position = await getNextCardAssetPosition(tx, card.id);
+        await run(
+          tx,
+          'INSERT INTO Cards_Assets (cardId, assetId, position) VALUES (?, ?, ?)',
+          [card.id, assetId, position]
+        );
+      }));
   }
 
   return await getAssetViewById(assetId, { projectId: normalizedProjectId });
@@ -4145,7 +4183,7 @@ export async function findLibraryAssetByFilePath(type, filePath) {
      WHERE at.name = ?
        AND a.parentId IS NULL
        AND a.filePath = ?
-     ORDER BY a.creationDate DESC
+     ORDER BY a.creationDate DESC, a.id DESC
      LIMIT 1`,
     [normalizeAssetTypeName(type), toStoredAssetPath(type, filePath)]
   );
@@ -4209,7 +4247,7 @@ export async function renameLibraryAssetByFilePath(type, filePath, name) {
      WHERE at.name = ?
        AND a.parentId IS NULL
        AND a.filePath = ?
-     ORDER BY a.creationDate DESC
+     ORDER BY a.creationDate DESC, a.id DESC
      LIMIT 1`,
     [normalizedType, storedFilePath]
   );
@@ -4324,7 +4362,7 @@ async function findProjectLinkedToVersion(db, versionId, editReference) {
      FROM Assets_Projects ap
      LEFT JOIN Projects p ON p.id = ap.projectId
      WHERE ap.assetId = ?
-     ORDER BY ap.addedAt DESC, ap.projectId DESC
+     ORDER BY ap.addedAt DESC NULLS LAST, ap.projectId DESC NULLS LAST
      LIMIT 1`,
     [versionId]
   );
@@ -4439,7 +4477,7 @@ export async function deleteLibraryAssetByFilePath(type, filePath, { force = fal
      WHERE at.name = ?
        AND a.parentId IS NULL
        AND a.filePath = ?
-     ORDER BY ap.addedAt DESC
+     ORDER BY ap.addedAt DESC NULLS LAST, ap.projectId DESC NULLS LAST
      LIMIT 1`,
     [normalizedType, storedFilePath]
   );
@@ -4521,10 +4559,10 @@ export async function deleteLibraryAssetByFilePath(type, filePath, { force = fal
 
   const affectedCardIds = [...new Set(linkedCardRows.map(row => row.cardId).filter(cardId => Number.isInteger(cardId)))];
   for (const cardId of affectedCardIds) {
-    await normalizeCardAssetPositions(cardId);
+    await normalizeCardAssetPositions(db, cardId);
   }
 
-  await deleteCardsIfEmpty(affectedCardIds);
+  await deleteCardsIfEmpty(db, affectedCardIds);
 
   await fs.rm(toAbsoluteStoragePath(storedFilePath), { force: true }).catch(() => null);
 
@@ -4549,14 +4587,13 @@ export async function deleteLibraryAssetByFilePath(type, filePath, { force = fal
   return { status: 'deleted' };
 }
 
-async function deleteCardsIfEmpty(cardIds = []) {
+async function deleteCardsIfEmpty(db, cardIds = []) {
   const uniqueCardIds = [...new Set(cardIds.filter(cardId => Number.isInteger(cardId)))];
 
   if (uniqueCardIds.length === 0) {
     return;
   }
 
-  const db = await getDb();
   const placeholders = uniqueCardIds.map(() => '?').join(', ');
   // Only prune empty Kanban cards. Graph node-cards (nodeTypeId IS NOT NULL) are
   // valid without any asset (e.g. value nodes) and are removed only explicitly
@@ -4586,7 +4623,7 @@ async function deleteCardsIfEmpty(cardIds = []) {
   }
 
   for (const card of affectedColumns.values()) {
-    await normalizeCardPositions(card.projectId, card.kanbanColumnId);
+    await normalizeCardPositions(db, card.projectId, card.kanbanColumnId);
   }
 }
 
@@ -4616,9 +4653,9 @@ export async function deleteAssetById(assetId, { projectId = null } = {}) {
     if (links.length > 0) {
       await run(db, 'DELETE FROM Cards_Assets WHERE assetId = ?', [assetId]);
       for (const link of links) {
-        await normalizeCardAssetPositions(link.cardId);
+        await normalizeCardAssetPositions(db, link.cardId);
       }
-      await deleteCardsIfEmpty(links.map(link => link.cardId));
+      await deleteCardsIfEmpty(db, links.map(link => link.cardId));
     }
 
     return { status: 'unlinked' };
@@ -4705,7 +4742,10 @@ export async function countUsers() {
 
 export async function listUsers() {
   const db = await getDb();
-  const rows = await all(db, 'SELECT * FROM Users ORDER BY login COLLATE NOCASE');
+  // lower() rather than COLLATE NOCASE: PostgreSQL has no such collation, and the
+  // two agree on the ASCII logins this accepts. The Users table is tiny, so the
+  // unindexed sort on SQLite costs nothing.
+  const rows = await all(db, 'SELECT * FROM Users ORDER BY lower(login)');
   return rows.map(mapUserRow);
 }
 
@@ -4717,7 +4757,7 @@ export async function getUserById(userId) {
 // The only function that exposes passwordHash. Used by the login flow alone.
 export async function findUserByLogin(login) {
   const db = await getDb();
-  const row = await get(db, 'SELECT * FROM Users WHERE login = ? COLLATE NOCASE', [String(login || '').trim()]);
+  const row = await get(db, 'SELECT * FROM Users WHERE lower(login) = lower(?)', [String(login || '').trim()]);
   if (!row) return null;
   return { ...mapUserRow(row), passwordHash: row.passwordHash };
 }
@@ -4736,7 +4776,7 @@ export async function createUser({ login, passwordHash, displayName = '', role =
     );
     return await getUserById(result.lastID);
   } catch (err) {
-    // SQLITE_CONSTRAINT on the UNIQUE COLLATE NOCASE index.
+    // a unique violation from the case-insensitive login index.
     if (String(err?.message || '').includes('UNIQUE')) throw new Error('A user with that login already exists');
     throw err;
   }
@@ -4793,7 +4833,7 @@ export async function listWorkflowRecords(viewerId = null) {
      LEFT JOIN WorkflowConfigs wc ON wc.assetId = a.id
      WHERE at.name = 'Workflow'
        ${scoped ? 'AND (wc.ownerId IS NULL OR wc.ownerId = ?)' : ''}
-     ORDER BY a.creationDate DESC`,
+     ORDER BY a.creationDate DESC, a.id DESC`,
     scoped ? [numericViewerId] : []
   );
 }
@@ -4912,7 +4952,7 @@ export async function listLibraryAssetsByType(type, baseUrl, viewerId = null) {
      JOIN AssetTypes at ON at.id = a.assetTypeId
      WHERE at.name = ?
        AND a.parentId IS NULL${scope.clause}
-     ORDER BY a.creationDate DESC`,
+     ORDER BY a.creationDate DESC, a.id DESC`,
     [normalizeAssetTypeName(type), ...scope.params]
   );
 
@@ -4926,7 +4966,7 @@ export async function listLibraryAssetsByType(type, baseUrl, viewerId = null) {
                 SELECT ap.projectId
                 FROM Assets_Projects ap
                 WHERE ap.assetId = a.id
-                ORDER BY ap.addedAt DESC, ap.projectId DESC
+                ORDER BY ap.addedAt DESC NULLS LAST, ap.projectId DESC NULLS LAST
                 LIMIT 1
               ) AS projectId
        FROM Assets a
@@ -5295,7 +5335,10 @@ export async function buildProjectExport(projectId, { appVersion = '' } = {}) {
       db,
       `SELECT sourceCardId AS sourceNodeId, targetCardId AS targetNodeId, inputId, outputId
        FROM Connections
-       WHERE sourceCardId IN (${placeholders}) AND targetCardId IN (${placeholders})`,
+       WHERE sourceCardId IN (${placeholders}) AND targetCardId IN (${placeholders})
+       -- The full primary key, so a bundle exported twice is byte-identical and
+       -- two engines agree. Without it the row order is whatever the plan chose.
+       ORDER BY sourceCardId ASC, targetCardId ASC, inputId ASC, outputId ASC`,
       [...nodeIds, ...nodeIds]
     );
   }
@@ -5306,7 +5349,7 @@ export async function buildProjectExport(projectId, { appVersion = '' } = {}) {
     `SELECT c.*, kc.name AS columnName
      FROM Cards c JOIN Columns kc ON kc.id = c.kanbanColumnId
      WHERE c.projectId = ? AND c.nodeTypeId IS NULL
-     ORDER BY c.kanbanColumnId ASC, c.position ASC`,
+     ORDER BY c.kanbanColumnId ASC NULLS FIRST, c.position ASC NULLS FIRST, c.id ASC NULLS FIRST`,
     [project.id]
   );
   cards.forEach(card => collectAssetIdsFromValue(parseJson(card.metadata, {}), seedAssetIds));
@@ -5315,7 +5358,8 @@ export async function buildProjectExport(projectId, { appVersion = '' } = {}) {
     db,
     `SELECT DISTINCT ca.assetId AS assetId
      FROM Cards_Assets ca JOIN Cards c ON c.id = ca.cardId
-     WHERE c.projectId = ?`,
+     WHERE c.projectId = ?
+     ORDER BY ca.assetId ASC`,
     [project.id]
   );
   cardAssetRows.forEach(row => seedAssetIds.add(row.assetId));
@@ -5325,7 +5369,7 @@ export async function buildProjectExport(projectId, { appVersion = '' } = {}) {
   // half-migrated database still carries everything).
   const memberAssetRows = await all(
     db,
-    'SELECT assetId FROM Assets_Projects WHERE projectId = ?',
+    'SELECT assetId FROM Assets_Projects WHERE projectId = ? ORDER BY assetId ASC',
     [project.id]
   );
   memberAssetRows.forEach(row => seedAssetIds.add(row.assetId));
@@ -5693,12 +5737,15 @@ export async function importProjectExport(manifest, bundleDir, { name, ownerId =
     throw new Error(`Unsupported .3dgp version: ${manifest.schemaVersion}`);
   }
 
-  const db = await getDb();
+  const pool = await getDb();
   const proj = manifest.project || {};
   const projectName = String(name || proj.name || 'Imported Project').trim() || 'Imported Project';
 
-  await exec(db, 'BEGIN');
-  try {
+  // An import inserts rows AND copies files, and a half-imported project is
+  // worse than no import at all -- so this cannot be split. The handle passed in
+  // shadows the outer pool deliberately: on PostgreSQL it owns one connection for
+  // the whole body, which is the only way BEGIN and the writes land together.
+  return withTransaction(pool, async db => {
     const newProjectId = await allocateProjectId(db);
     const createdAt = Date.now();
     const importOwnerId = ownerScope(ownerId);
@@ -5773,7 +5820,7 @@ export async function importProjectExport(manifest, bundleDir, { name, ownerId =
       for (const tag of normalizeTagList(asset.tags || [])) {
         await run(
           db,
-          'INSERT OR IGNORE INTO Assets_Tags (assetId, tag, addedAt) VALUES (?, ?, ?)',
+          'INSERT INTO Assets_Tags (assetId, tag, addedAt) VALUES (?, ?, ?) ON CONFLICT DO NOTHING',
           [newId, tag, createdAt]
         );
       }
@@ -5965,7 +6012,7 @@ export async function importProjectExport(manifest, bundleDir, { name, ownerId =
         if (sourceId == null || targetId == null) continue;
         await run(
           db,
-          `INSERT OR IGNORE INTO Connections (sourceCardId, targetCardId, inputId, outputId) VALUES (?, ?, ?, ?)`,
+          `INSERT INTO Connections (sourceCardId, targetCardId, inputId, outputId) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING`,
           [sourceId, targetId, conn.inputId, conn.outputId]
         );
       }
@@ -5985,10 +6032,11 @@ export async function importProjectExport(manifest, bundleDir, { name, ownerId =
       // gives v1 bundles (no projectAssetRefIds) their membership.
       await run(
         db,
-        `INSERT OR IGNORE INTO Assets_Projects (assetId, projectId, addedAt)
+        `INSERT INTO Assets_Projects (assetId, projectId, addedAt)
          SELECT DISTINCT ca.assetId, c.projectId, ?
          FROM Cards_Assets ca JOIN Cards c ON c.id = ca.cardId
-         WHERE c.projectId = ?`,
+         WHERE c.projectId = ?
+         ON CONFLICT DO NOTHING`,
         [now, newProjectId]
       );
 
@@ -6001,11 +6049,12 @@ export async function importProjectExport(manifest, bundleDir, { name, ownerId =
         do {
           const result = await run(
             db,
-            `INSERT OR IGNORE INTO Assets_Projects (assetId, projectId, addedAt)
+            `INSERT INTO Assets_Projects (assetId, projectId, addedAt)
              SELECT child.id, ap.projectId, ?
              FROM Assets child
              JOIN Assets_Projects ap ON ap.assetId = child.parentId
-             WHERE ap.projectId = ? AND child.parentId IS NOT NULL`,
+             WHERE ap.projectId = ? AND child.parentId IS NOT NULL
+             ON CONFLICT DO NOTHING`,
             [now, newProjectId]
           );
           inserted = result?.changes ?? 0;
@@ -6014,14 +6063,6 @@ export async function importProjectExport(manifest, bundleDir, { name, ownerId =
       }
     }
 
-    await exec(db, 'COMMIT');
     return mapProjectRow(await get(db, 'SELECT * FROM Projects WHERE id = ?', [newProjectId]));
-  } catch (err) {
-    try {
-      await exec(db, 'ROLLBACK');
-    } catch (rollbackErr) {
-      console.error('Failed to roll back project import:', rollbackErr);
-    }
-    throw err;
-  }
+  });
 }

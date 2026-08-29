@@ -21,11 +21,13 @@
     "mcp:stdio": "node mcp/stdio.js",
     "electron:dev": "npm run build && electron .",
     "check:packaging": "node tools/check-packaged-modules.mjs",
-    "dist": "npm run check:packaging && npm run build && electron-builder --publish never",
-    "dist:win": "npm run check:packaging && npm run build && electron-builder --win --publish never",
-    "dist:mac": "npm run check:packaging && npm run build && electron-builder --mac --publish never",
-    "dist:linux": "npm run check:packaging && npm run build && electron-builder --linux --publish never",
-    "dist:dir": "npm run check:packaging && npm run build && electron-builder --dir"
+    "check:db": "node tools/check-generated-db.mjs",
+    "db:migrate": "node tools/migrate-sqlite-to-postgres.mjs",
+    "dist": "npm run check:packaging && npm run check:db && npm run build && electron-builder --publish never",
+    "dist:win": "npm run check:packaging && npm run check:db && npm run build && electron-builder --win --publish never",
+    "dist:mac": "npm run check:packaging && npm run check:db && npm run build && electron-builder --mac --publish never",
+    "dist:linux": "npm run check:packaging && npm run check:db && npm run build && electron-builder --linux --publish never",
+    "dist:dir": "npm run check:packaging && npm run check:db && npm run build && electron-builder --dir"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "^0.18.1",
@@ -42,6 +44,7 @@
     "express": "^5.2.1",
     "lowdb": "^7.0.1",
     "multer": "^2.1.1",
+    "pg": "^8.23.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-markdown": "^9.1.0",

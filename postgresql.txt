@@ -1,0 +1,4 @@
+psql -h 127.0.0.1 -p 5443 -U admin -c "CREATE ROLE genstudio LOGIN PASSWORD '<a password>';"
+psql -h 127.0.0.1 -p 5443 -U admin -c "CREATE DATABASE genstudio OWNER genstudio;"
+
+GENSTUDIO_DATABASE_URL: "postgres://genstudio:<password>@192.168.1.10:5443/genstudio"

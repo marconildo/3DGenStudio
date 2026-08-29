@@ -35,8 +35,15 @@ function collectModules(entry) {
 
     const source = readFileSync(absolute, 'utf8');
     const dir = path.dirname(file);
-    for (const match of source.matchAll(/from '(\.[^']+)'/g)) {
-      pending.push(path.join(dir, match[1]).split(path.sep).join('/'));
+    // Static imports, and dynamic ones too: db/index.js reaches its drivers only
+    // through `await import('./postgres.js')`, so a static-only walk would report
+    // the database layer as fully accounted for while the driver that actually
+    // opens the connection never ships.
+    const patterns = [/from '(\.[^']+)'/g, /\bimport\(\s*'(\.[^']+)'\s*\)/g];
+    for (const pattern of patterns) {
+      for (const match of source.matchAll(pattern)) {
+        pending.push(path.join(dir, match[1]).split(path.sep).join('/'));
+      }
     }
   }
 

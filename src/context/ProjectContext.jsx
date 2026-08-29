@@ -1,12 +1,18 @@
 /* eslint-disable react-refresh/only-export-components */
 import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react'
 import { API_BASE } from '../config'
+import { useRemote } from './RemoteContext.shared'
 
 const ProjectContext = createContext(null)
 
 export function ProjectProvider({ children }) {
   const [projects, setProjects] = useState([])
   const [loading, setLoading] = useState(true)
+
+  // Only the reporter, not the whole status object: useRemote() returns a fresh
+  // object on every 15s poll, but this callback is stable, so depending on it
+  // does not make fetchProjects churn (and re-fetch) on each tick.
+  const { reportRequestFailure } = useRemote()
 
   // A single shared SSE connection multiplexes progress for every ComfyUI
   // prompt. Using one connection for all jobs (instead of one per job) keeps
@@ -66,14 +72,30 @@ export function ProjectProvider({ children }) {
   const fetchProjects = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/projects`)
+
+      // A failed response still has a JSON body -- `{ "error": ... }` -- and
+      // storing THAT as the project list is what turned a sign-out into a black
+      // page: the Projects grid spreads `[...projects]`, and a plain object is
+      // not iterable, so the render threw and React unmounted the whole tree.
+      // Signing out of a shared server answers 401 by design (falling back to
+      // the local database would show a different, empty workspace and read as
+      // data loss), so this is an ordinary state, not an exceptional one.
+      if (!res.ok) {
+        setProjects([])
+        // Lets the banner under the header say which of "signed out" or "server
+        // unreachable" happened, instead of the page simply being empty.
+        reportRequestFailure?.(res.status)
+        return
+      }
+
       const data = await res.json()
-      setProjects(data)
+      setProjects(Array.isArray(data) ? data : [])
     } catch (err) {
       console.error('Failed to fetch projects:', err)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [reportRequestFailure])
 
   useEffect(() => {
     fetchProjects()

@@ -7,6 +7,11 @@ dist/
 # Electron packaged installers
 release/
 
+# Saved images for a NAS deployment (docker_build_nas_*.bat). Hundreds of MB
+# each, and rebuilt on demand.
+genstudio-server.tar
+genstudio-postgres.tar
+
 # Local database and assets (Portable Data).
 # Leading slash ANCHORS this to the repo root. Unanchored, `data/` matches a
 # directory named "data" at ANY depth — which silently excluded the whole

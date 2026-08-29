@@ -868,7 +868,11 @@ export default function ProjectsPage() {
           </div>
 
           <div className="projects-page__grid">
-            {[...projects]
+            {/* Array.isArray, not a bare spread: a non-array here throws during
+                render and React unmounts the whole tree, which shows up as a
+                black page rather than an error. The provider is what keeps this
+                an array -- this is the second lock on the same door. */}
+            {(Array.isArray(projects) ? [...projects] : [])
               .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
               .map((project, i) => (
               <div

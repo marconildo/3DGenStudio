@@ -60,6 +60,15 @@ files:
   - gateway.js
   - dataStore.js
   - uploadQueue.js
+  # Self-managed PostgreSQL for a shared server. server.js imports it statically,
+  # so it has to ship even though a desktop install never starts it.
+  - pgEmbedded.js
+  # The SQL engine. storage.js imports db/index.js, which picks a driver at
+  # startup: SQLite for this desktop build, PostgreSQL when a shared server sets
+  # GENSTUDIO_DATABASE_URL. The whole directory ships because the drivers are
+  # loaded by dynamic import — a name-by-name list would look complete and still
+  # miss them. db/schema.pg.sql is read at runtime, so it has to travel too.
+  - db/**/*
   # MCP automation server (POST /mcp on the backend + stdio bridge).
   - mcp/**/*
   - version.json
