@@ -3666,7 +3666,11 @@ export default function GraphPage({ project }) {
               </div>
             )}
 
-            {loading && (
+            {/* Only while there is nothing on screen yet. The effect that sets
+                `loading` re-runs whenever its context callbacks change identity,
+                and flashing this badge over an already-drawn graph reads as a
+                glitch. */}
+            {loading && nodes.length === 0 && (
               <div className="graph-page__loading font-label">Loading graph…</div>
             )}
 

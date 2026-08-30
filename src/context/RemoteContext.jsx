@@ -29,6 +29,29 @@ const EMPTY_STATUS = {
 // seconds, and a tight poll on every open tab would be pure noise.
 const POLL_INTERVAL_MS = 15000
 
+// The poll answers with the same status almost every time, but a fresh object
+// literal still counts as a state change: it re-renders every useRemote()
+// consumer, and ProjectProvider is one of them -- so every page got a new
+// context object (with new fetch callbacks) on every tick. GraphPage's load
+// effect depends on those, which is why the graph refetched and flashed
+// "Loading graph..." every 15 seconds. Keeping the previous object when nothing
+// actually changed stops that at the source.
+function isSameStatus(a, b) {
+  if (a === b) return true
+  if (!a || !b) return false
+  for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) {
+    const left = a[key]
+    const right = b[key]
+    if (left === right) continue
+    // `user` is the only nested value, and a re-parsed JSON body never matches
+    // the previous one by reference, so compare it structurally.
+    if (left && right && typeof left === 'object' && typeof right === 'object'
+      && JSON.stringify(left) === JSON.stringify(right)) continue
+    return false
+  }
+  return true
+}
+
 export function RemoteProvider({ children }) {
   const [status, setStatus] = useState(EMPTY_STATUS)
   const [loading, setLoading] = useState(true)
@@ -49,7 +72,8 @@ export function RemoteProvider({ children }) {
       }
       const data = await res.json()
       if (mountedRef.current) {
-        setStatus({ ...EMPTY_STATUS, ...data })
+        const next = { ...EMPTY_STATUS, ...data }
+        setStatus(current => (isSameStatus(current, next) ? current : next))
         if (data.connected) setUnreachable(false)
       }
       return data
