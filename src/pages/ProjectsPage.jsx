@@ -27,6 +27,22 @@ const PRESETS = [
 
 const CHANGE_LOG_ENTRIES = [
   {
+    version: 'v3.0.0',
+    date: '2026-08-30',
+    items: [
+			'Multi-User: Can host the server on another machine',
+			'Desktop App: Check if the ports are already used',
+			'Graph/Kanban: Paste image directly in your project',
+			'MeshEditor: Fixed a cache issue',
+			'MoCap: Added documentation in the wiki',
+			'ComfyUI: Updated packages',
+			'MeshEditor - AutoRig: Added Weight Painting mode',
+			'MeshEditor - AutoRig: Improved bone renaming in Mixamo/Unreal Engine',
+			'MeshEditor - AutoRig: Added bones renaming for mesh2motion animals',
+			'MeshEditor - AutoRig: Can show/hide all bone names'
+    ]
+  },
+  {
     version: 'v2.7.0',
     date: '2026-08-27',
     items: [
