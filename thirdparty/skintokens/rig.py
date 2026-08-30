@@ -57,7 +57,9 @@ DEFAULT_MODEL_CKPT = "experiments/articulation_xl_quantization_256_token_4/grpo_
 #   "original" -> keep the model's own bone names
 #   "mixamo"   -> Mixamo humanoid naming (mixamorig:Hips, ...)
 #   "ue5"      -> Unreal Engine 5 humanoid naming (pelvis, spine_01, ...)
-RENAME_BONES_CHOICES = list(SKELETON_TEMPLATE_KEYS)  # ["original", "mixamo", "ue5"]
+RENAME_BONES_CHOICES = list(SKELETON_TEMPLATE_KEYS)
+# "original", "mixamo", "ue5", then the eight mesh2motion creature templates
+# (bird, dragon, fox, horse, kaiju, shark, snake, spider).
 
 SUPPORTED_EXT = {".obj", ".fbx", ".glb"}
 

@@ -31,6 +31,7 @@ Prerequisite (run once): ``python download.py --model``.
 from __future__ import annotations
 
 import base64
+import collections
 import json
 import os
 import queue
@@ -154,6 +155,12 @@ def _run_cold_rig(in_path: Path, out_path: Path, opts: dict, report) -> None:
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, bufsize=1,
     )
+    # Keep the worker's most recent output so a failure can carry its own cause.
+    # Pointing the user at "the log above" is no help when the service's stdout
+    # is not being captured, or when the log has since been rotated — which is
+    # exactly how a worker that died on an import error looked like nothing at
+    # all had happened.
+    recent: "collections.deque[str]" = collections.deque(maxlen=40)
     try:
         for line in proc.stdout:
             if line.startswith("@@RP@@"):
@@ -163,11 +170,15 @@ def _run_cold_rig(in_path: Path, out_path: Path, opts: dict, report) -> None:
                     continue
                 except Exception:
                     pass
-            print(line, end="")  # forward the worker's other output to the log
+            recent.append(line.rstrip("\n"))
+            print(line, end="", flush=True)  # forward to the log as it arrives
     finally:
         code = proc.wait()
     if code != 0:
-        raise RuntimeError(f"cold rig worker exited with code {code} (see log above).")
+        # A traceback ends with the exception line, so the tail is the useful part.
+        tail = [ln for ln in recent if ln.strip()][-12:]
+        detail = "\n".join(tail) if tail else "the worker produced no output"
+        raise RuntimeError(f"cold rig worker exited with code {code}:\n{detail}")
 
 
 def _glb_bone_count(path: Path) -> int | None:

@@ -96,7 +96,7 @@ const CONVERT_OPTIONS = {
 // the rigging service is a separate stack (SkinTokens/TokenRig) with no shared
 // schema file, so the panel's ranges are the contract.
 const AUTO_RIG_OPTIONS = {
-  rename_bones: z.enum(['mixamo', 'ue5', 'original']).default('mixamo').describe('Rename the generated bones to a standard humanoid convention for retargeting. Leave on "mixamo" if the rig will drive the Animations tab.'),
+  rename_bones: z.enum(['mixamo', 'ue5', 'bird', 'dragon', 'fox', 'horse', 'kaiju', 'shark', 'snake', 'spider', 'original']).default('mixamo').describe('Rename the generated bones to a standard convention for retargeting. "mixamo"/"ue5" are humanoid; the animal names match the mesh2motion reference rigs the Animations tab retargets from, so pick the one for the creature you modelled.'),
   use_transfer: z.boolean().default(true).describe('Transfer the rig onto the ORIGINAL mesh, keeping its texture and scale. Recommended — with this off the result is the service\'s own remeshed proxy.'),
   use_postprocess: z.boolean().default(false).describe('Voxel-skin postprocess: clean up skin weights to reduce bleed across disconnected parts.'),
   keep_loaded: z.boolean().default(true).describe('Keep the rig model in (GPU) memory for fast repeat rigs.'),

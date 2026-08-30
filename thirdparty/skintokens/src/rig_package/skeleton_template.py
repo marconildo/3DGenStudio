@@ -12,16 +12,23 @@ SKELETON_TEMPLATE_KEEP = "original"
 SKELETON_TEMPLATE_MIXAMO = "mixamo"
 SKELETON_TEMPLATE_UE5 = "ue5"
 
+# The eight mesh2motion creature conventions live in species_template; they are
+# listed here so the service, the CLI and the UI all see one set of choices.
+SKELETON_TEMPLATE_SPECIES = [
+    "bird", "dragon", "fox", "horse", "kaiju", "shark", "snake", "spider",
+]
+
 SKELETON_TEMPLATE_KEYS = [
     SKELETON_TEMPLATE_KEEP,
     SKELETON_TEMPLATE_MIXAMO,
     SKELETON_TEMPLATE_UE5,
-]
+] + SKELETON_TEMPLATE_SPECIES
 
 SKELETON_TEMPLATE_LABELS = {
     SKELETON_TEMPLATE_KEEP: "Keep model names",
     SKELETON_TEMPLATE_MIXAMO: "Mixamo",
     SKELETON_TEMPLATE_UE5: "Unreal Engine 5",
+    **{key: f"{key.capitalize()} (mesh2motion)" for key in SKELETON_TEMPLATE_SPECIES},
 }
 
 SKELETON_TEMPLATE_LABEL_CHOICES = [
@@ -45,6 +52,9 @@ _GENERIC_BONE_NAME = re.compile(r"^(bone|joint)[_ .:-]*\d+$", re.IGNORECASE)
 _EXTRA_BONE_PREFIX = {
     SKELETON_TEMPLATE_MIXAMO: "mixamorig:Extra",
     SKELETON_TEMPLATE_UE5: "extra",
+    # Anything a creature template cannot place — an ear, a horn, a feather, a
+    # spare leg pair the reference rig has no slot for.
+    **{key: "extra" for key in SKELETON_TEMPLATE_SPECIES},
 }
 
 _SEMANTIC_TEMPLATE_NAMES = {
@@ -1158,6 +1168,24 @@ def apply_asset_joint_name_template(
 
     if template == SKELETON_TEMPLATE_KEEP:
         return _make_unique_names(source_names)
+
+    if template in SKELETON_TEMPLATE_SPECIES:
+        # Imported here rather than at module scope: species_template imports
+        # this module's geometry helpers, so a top-level import would cycle.
+        # Relative: the rig service imports this file as
+        # src.rig_package.skeleton_template, and a bare "import
+        # species_template" only resolves when rig_package itself happens to be
+        # on sys.path — which is true when a test adds it and false in the
+        # service, so the bare form fails only in production.
+        from .species_template import build_species_names
+
+        if joints is None or parents is None or joint_count <= 0:
+            return _make_unique_names(source_names)
+        species_names = build_species_names(
+            joint_names=source_names, joints=joints, parents=parents, species=template)
+        # Nothing sensible to fall back to for a creature — the positional map
+        # is humanoid-shaped — so keep the model's own names on a failed read.
+        return species_names if species_names is not None else _make_unique_names(source_names)
 
     if joints is not None and parents is not None and joint_count > 0:
         humanoid_names = _apply_humanoid_template(

@@ -384,9 +384,20 @@ export const DEFAULT_AUTO_RIG_OPTIONS = {
   num_beams: 10,
 }
 
+// The creature entries name bones the way the mesh2motion reference rigs do, so
+// the Animations tab's Auto-Map pairs them by exact name instead of guessing.
+// Pick the one matching the reference you intend to retarget from.
 export const AUTO_RIG_BONE_NAME_OPTIONS = [
   { value: 'mixamo', label: 'Mixamo' },
   { value: 'ue5', label: 'Unreal Engine 5' },
+  { value: 'bird', label: 'Bird (mesh2motion)' },
+  { value: 'dragon', label: 'Dragon (mesh2motion)' },
+  { value: 'fox', label: 'Fox (mesh2motion)' },
+  { value: 'horse', label: 'Horse (mesh2motion)' },
+  { value: 'kaiju', label: 'Kaiju (mesh2motion)' },
+  { value: 'shark', label: 'Shark (mesh2motion)' },
+  { value: 'snake', label: 'Snake (mesh2motion)' },
+  { value: 'spider', label: 'Spider (mesh2motion)' },
   { value: 'original', label: 'Keep model names' },
 ]
 

@@ -40,8 +40,13 @@ if "omegaconf" not in sys.modules:  # pragma: no cover - import shim
         stub.OmegaConf = types.SimpleNamespace(load=_no_fallback)
         sys.modules["omegaconf"] = stub
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "rig_package"))
-import skeleton_template as st  # noqa: E402
+# Import through the PACKAGE, exactly as the rig service does
+# (src.rig_package.skeleton_template). Importing these files as top-level
+# modules instead — by putting src/rig_package itself on sys.path — makes the
+# package's own relative imports unresolvable, so a broken intra-package import
+# would pass here and fail only in production. It has happened once already.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from src.rig_package import skeleton_template as st  # noqa: E402
 
 
 # Joints arrive in Blender space: Z up, and these skeletons face -Y, which makes
