@@ -73,7 +73,7 @@
   },
   "19": {
     "inputs": {
-      "image": "Image_4096_00023_.png"
+      "image": ""
     },
     "class_type": "LoadImage",
     "_meta": {
@@ -82,8 +82,8 @@
   },
   "22": {
     "inputs": {
-      "glb_path": "C:\\Git\\ComfyUI\\output\\3D\\DwarfSorcerer_MV\\DwarfSorcerer_MV_00001_.glb",
-      "only_vertices_and_faces": true
+      "glb_path": "",
+      "only_vertices_and_faces": false
     },
     "class_type": "UltraTexLoadMesh",
     "_meta": {

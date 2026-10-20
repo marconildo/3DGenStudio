@@ -160,7 +160,7 @@
   },
   "19": {
     "inputs": {
-      "image": "DwarfWarrior_1024_00001_.png"
+      "image": ""
     },
     "class_type": "LoadImage",
     "_meta": {
@@ -169,7 +169,7 @@
   },
   "22": {
     "inputs": {
-      "glb_path": "C:\\Git\\ComfyUI\\output\\3D\\DwarfWarrior_MV_Qwen\\DwarfWarrior_MV_Qwen_WhiteMesh_00001_.glb",
+      "glb_path": "",
       "only_vertices_and_faces": false
     },
     "class_type": "UltraTexLoadMesh",

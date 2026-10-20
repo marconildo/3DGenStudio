@@ -27,7 +27,7 @@
   },
   "5": {
     "inputs": {
-      "unet_name": "{diffusion_model}",
+      "unet_name": "flux-2-klein-base-9b-fp8.safetensors",
       "weight_dtype": "default"
     },
     "class_type": "UNETLoader",
@@ -83,7 +83,7 @@
   "22": {
     "inputs": {
       "glb_path": "",
-      "only_vertices_and_faces": true
+      "only_vertices_and_faces": false
     },
     "class_type": "UltraTexLoadMesh",
     "_meta": {
@@ -153,14 +153,6 @@
         0
       ],
       "albedo_views": [
-        "25",
-        0
-      ],
-      "prep_2": [
-        "2",
-        0
-      ],
-      "albedo_views_2": [
         "25",
         0
       ]
