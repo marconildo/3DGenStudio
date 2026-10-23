@@ -5,7 +5,9 @@
     },
     "class_type": "LoadImage",
     "_meta": {
-      "title": "Load Image"
+      "title": "Load Image",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
     }
   },
   "5": {
@@ -30,7 +32,9 @@
     },
     "class_type": "Hy3DGenerateMesh",
     "_meta": {
-      "title": "Hy3DGenerateMesh"
+      "title": "Hy3DGenerateMesh",
+      "aux_id": "visualbruno/ComfyUI-Hunyuan3DWrapper",
+      "ver": "1cc6627e847e80a16140e75e421fed34ff9ea7b5"
     }
   },
   "6": {
@@ -53,7 +57,9 @@
     },
     "class_type": "Hy3DVAEDecode",
     "_meta": {
-      "title": "Hy3D VAE Decode"
+      "title": "Hy3D VAE Decode",
+      "aux_id": "visualbruno/ComfyUI-Hunyuan3DWrapper",
+      "ver": "1cc6627e847e80a16140e75e421fed34ff9ea7b5"
     }
   },
   "27": {
@@ -70,13 +76,15 @@
     },
     "class_type": "Hy3DPostprocessMesh",
     "_meta": {
-      "title": "Hy3D Postprocess Mesh"
+      "title": "Hy3D Postprocess Mesh",
+      "aux_id": "visualbruno/ComfyUI-Hunyuan3DWrapper",
+      "ver": "1cc6627e847e80a16140e75e421fed34ff9ea7b5"
     }
   },
   "75": {
     "inputs": {
-      "left": 80,
-      "right": 80,
+      "left": 64,
+      "right": 64,
       "top": 0,
       "bottom": 0,
       "extra_padding": 0,
@@ -93,26 +101,18 @@
     },
     "class_type": "ImagePadKJ",
     "_meta": {
-      "title": "ImagePad KJ"
-    }
-  },
-  "76": {
-    "inputs": {
-      "mask": [
-        "75",
-        1
-      ]
-    },
-    "class_type": "InvertMask",
-    "_meta": {
-      "title": "Invert Mask"
+      "title": "ImagePad KJ",
+      "cnr_id": "comfyui-kjnodes",
+      "ver": "37a6c45a07bb06cc392431ddbbc741e691c467f4"
     }
   },
   "86": {
     "inputs": {},
     "class_type": "Hy3DMiniTurboModelLoader",
     "_meta": {
-      "title": "Hy3D - Mini Turbo Model Loader"
+      "title": "Hy3D - Mini Turbo Model Loader",
+      "aux_id": "visualbruno/ComfyUI-Hunyuan3DWrapper",
+      "ver": "1cc6627e847e80a16140e75e421fed34ff9ea7b5"
     }
   },
   "87": {
@@ -126,7 +126,9 @@
     },
     "class_type": "Hy3DExportMesh",
     "_meta": {
-      "title": "Hy3DExportMesh"
+      "title": "Hy3DExportMesh",
+      "aux_id": "visualbruno/ComfyUI-Hunyuan3DWrapper",
+      "ver": "1cc6627e847e80a16140e75e421fed34ff9ea7b5"
     }
   },
   "88": {
@@ -146,7 +148,9 @@
     },
     "class_type": "ComfySwitchNode",
     "_meta": {
-      "title": "If/Else Switch"
+      "title": "If/Else Switch",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
     }
   },
   "89": {
@@ -155,7 +159,9 @@
     },
     "class_type": "PrimitiveBoolean",
     "_meta": {
-      "title": "Fix Distortion"
+      "title": "Fix Distortion",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
     }
   },
   "90": {
@@ -169,13 +175,15 @@
         1
       ],
       "on_true": [
-        "76",
-        0
+        "75",
+        1
       ]
     },
     "class_type": "ComfySwitchNode",
     "_meta": {
-      "title": "If/Else Switch"
+      "title": "If/Else Switch",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
     }
   },
   "91": {
@@ -187,7 +195,9 @@
     },
     "class_type": "InvertMask",
     "_meta": {
-      "title": "Invert Mask"
+      "title": "Invert Mask",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
     }
   }
 }
