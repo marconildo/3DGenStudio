@@ -1094,6 +1094,70 @@
 					]
 				}				
 			]
+		},
+		{
+			"Name": "Fibo 2.0",
+			"DiffusionModels": {
+				"BF16":   { "FileName": "fibo2_dev_bf16.safetensors",   "Url": "https://huggingface.co/Comfy-Org/Fibo-2.0/resolve/main/diffusion_models/fibo2_dev_bf16.safetensors?download=true",   "Size": 16.5 },
+				"INT8":   { "FileName": "fibo2_dev_int8_convrot.safetensors",   "Url": "https://huggingface.co/Comfy-Org/Fibo-2.0/resolve/main/diffusion_models/fibo2_dev_int8_convrot.safetensors?download=true",   "Size": 8.41 }
+			},
+			"VAE":         [
+				{ "FileName": "flux2-vae.safetensors",            "Url": "https://huggingface.co/Comfy-Org/Fibo-2.0/resolve/main/vae/flux2-vae.safetensors?download=true",                          "Size": 0.34 }
+			],
+			"TextEncoder": [
+				{ "FileName": "qwen3vl_4b_int8_convrot.safetensors", "Url": "https://huggingface.co/Comfy-Org/Fibo-2.0/resolve/main/text_encoders/qwen3vl_4b_int8_convrot.safetensors?download=true",          "Size": 4.86 }
+			],
+			"LoRA":[
+				{ "FileName": "fibo_2.0_turbo_lora_avg_rank_270_bf16.safetensors", "Url": "https://huggingface.co/Comfy-Org/Fibo-2.0/resolve/main/loras/fibo_2.0_turbo_lora_avg_rank_270_bf16.safetensors?download=true",          "Size": 1.99 }
+			],
+			"Workflows": [
+				{
+					"Name": "Gen Image with Fibo 2.0",
+					"File": "setup/Gen Image with Fibo2.json",
+					"Inputs": [
+						{ "Node": "127", "Input": "value",  "Name": "Prompt", "Type": "String" },
+						{ "Node": "3",  "Input": "seed",  "Name": "Seed",   "Type": "Number" },
+						{ "Node": "126",  "Input": "value",  "Name": "Use Prompt Enhancer",   "Type": "Boolean" },
+						{ "Node": "115",  "Input": "value",  "Name": "Use Turbo",   "Type": "Boolean" },
+						{ "Node": "102",  "Input": "width", "Name": "Width",  "Type": "Number" },
+						{ "Node": "102",  "Input": "height", "Name": "Height",  "Type": "Number" },
+						{ "Node": "102",  "Input": "batch_size", "Name": "Number of Images to Generate",  "Type": "Number" }
+					],
+					"Outputs": [
+						{ "Node": "128", "Name": "Save Image", "Type": "Image" }
+					]
+				}			
+			]
+		},
+		{
+			"Name": "Fibo 2.0 Edit Turbo",
+			"DiffusionModels": {
+				"BF16":   { "FileName": "fibo2_edit_turbo_bf16.safetensors",   "Url": "https://huggingface.co/Comfy-Org/Fibo-2.0/resolve/main/diffusion_models/fibo2_edit_turbo_bf16.safetensors?download=true",   "Size": 16.5 },
+				"INT8":   { "FileName": "fibo2_edit_turbo_int8_convrot.safetensors",   "Url": "https://huggingface.co/Comfy-Org/Fibo-2.0/resolve/main/diffusion_models/fibo2_edit_turbo_int8_convrot.safetensors?download=true",   "Size": 8.41 }
+			},
+			"VAE":         [
+				{ "FileName": "flux2-vae.safetensors",            "Url": "https://huggingface.co/Comfy-Org/Fibo-2.0/resolve/main/vae/flux2-vae.safetensors?download=true",                          "Size": 0.34 }
+			],
+			"TextEncoder": [
+				{ "FileName": "qwen3vl_4b_int8_convrot.safetensors", "Url": "https://huggingface.co/Comfy-Org/Fibo-2.0/resolve/main/text_encoders/qwen3vl_4b_int8_convrot.safetensors?download=true",          "Size": 4.86 }
+			],
+			"Workflows": [
+				{
+					"Name": "Edit Image with Fibo 2.0",
+					"File": "setup/Edit Image with Fibo2.json",
+					"Inputs": [
+						{ "Node": "113", "Input": "image",  "Name": "Source Image", "Type": "Image" },
+						{ "Node": "126", "Input": "value",  "Name": "Prompt", "Type": "String" },
+						{ "Node": "3",  "Input": "seed",  "Name": "Seed",   "Type": "Number" },
+						{ "Node": "125",  "Input": "value",  "Name": "Use Prompt Enhancer",   "Type": "Boolean" },
+						{ "Node": "124",  "Input": "width", "Name": "Width",  "Type": "Number" },
+						{ "Node": "124",  "Input": "height", "Name": "Height",  "Type": "Number" }
+					],
+					"Outputs": [
+						{ "Node": "128", "Name": "Save Image", "Type": "Image" }
+					]
+				}			
+			]
 		}			
 	],
 	"OtherWorkflows":[

@@ -1,0 +1,341 @@
+{
+  "3": {
+    "inputs": {
+      "seed": 1234,
+      "steps": 4,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": [
+        "37",
+        0
+      ],
+      "positive": [
+        "112",
+        0
+      ],
+      "negative": [
+        "112",
+        1
+      ],
+      "latent_image": [
+        "124",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler",
+      "cnr_id": "comfy-core",
+      "ver": "0.3.33"
+    }
+  },
+  "8": {
+    "inputs": {
+      "samples": [
+        "3",
+        0
+      ],
+      "vae": [
+        "39",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode",
+      "cnr_id": "comfy-core",
+      "ver": "0.3.33"
+    }
+  },
+  "37": {
+    "inputs": {
+      "unet_name": "{diffusion_model}",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Load Diffusion Model",
+      "cnr_id": "comfy-core",
+      "ver": "0.3.33"
+    }
+  },
+  "38": {
+    "inputs": {
+      "clip_name": "qwen3vl_4b_int8_convrot.safetensors",
+      "type": "fibo2",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Load CLIP",
+      "cnr_id": "comfy-core",
+      "ver": "0.3.33"
+    }
+  },
+  "39": {
+    "inputs": {
+      "vae_name": "flux2-vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE",
+      "cnr_id": "comfy-core",
+      "ver": "0.3.33"
+    }
+  },
+  "112": {
+    "inputs": {
+      "prompt": [
+        "127",
+        0
+      ],
+      "negative_prompt": "",
+      "width": 0,
+      "height": 0,
+      "batch_size": 1,
+      "clip": [
+        "38",
+        0
+      ],
+      "images.image_1": [
+        "132",
+        0
+      ],
+      "vae": [
+        "39",
+        0
+      ]
+    },
+    "class_type": "TextEncodeFibo2",
+    "_meta": {
+      "title": "TextEncodeFibo2",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "113": {
+    "inputs": {
+      "image": ""
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "117": {
+    "inputs": {
+      "prompt": [
+        "126",
+        0
+      ],
+      "max_length": 2048,
+      "sampling_mode": "off",
+      "thinking": false,
+      "use_default_template": true,
+      "mtp": "auto",
+      "clip": [
+        "121",
+        0
+      ],
+      "image": [
+        "132",
+        0
+      ],
+      "system_prompt": [
+        "118",
+        0
+      ]
+    },
+    "class_type": "TextGenerate",
+    "_meta": {
+      "title": "Generate Text",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "118": {
+    "inputs": {
+      "value": "You are a highly skilled Creative Director for Visual Adaptation at a leading Generative AI company.\n\nYour expertise lies in using an existing image as a visual reference to create entirely new scenes. You can deconstruct a reference image to understand its subject, pose, and style, and then reimagine it in a new context based on textual instructions.\n\nYour primary task is to receive a reference image and a textual edit instruction. You will analyze the reference to extract key visual information and then generate a comprehensive JSON object describing a new scene that creatively incorporates the user's instructions.\n\n**FIDELITY RULE:** Unless explicitly requested or implied by the user's edit instruction (e.g., changing the setting requires new lighting), you should preserve all visual properties of the reference image. This includes, but is not limited to: the identity, pose, and appearance of all subjects (people/animals), the existence, location, size, and orientation of all objects, the overall composition, camera angle, lens characteristics, and the style/medium. Only change what is strictly required to fulfill the user's edit.\nE.g. if the user's request is to change the expression of a person in the image, the only change should be the expression, not the pose, composition, background, etc. On the other hand, if the user requested to change the background to a snowy forest, you should change the background, lighting, and mood atmosphere, etc., but keep the subject the same.\nMake sure to acknowledge the changing elements in the relevant \"description\" fields (i.e. \"short_description\", object \"description\", etc.). e.g. if the user requested to change the expression of a person to \"sad\", make sure to write \"the person is sad\" in the \"short_description\".\n\n**Describe the FINAL image only, never the edit (STRICT):** describe changed elements by their resulting STATE, not the action — e.g. `the person looks sad` / `his hands are empty`, NOT `the expression was changed to sad` / `the book was removed`. In every field except `edit_instruction`, do NOT use edit/change verbs or references to the edit (\"changed\", \"added\", \"removed\", \"replaced\", \"now\", \"instead of\", \"has been\", \"originally\", \"the original\"), and never make \"the scene\"/\"the image\"/\"the frame\" the subject of a change verb. Only `edit_instruction` states the change.\n\n**CONTROL-MAP / CONDITIONING INPUTS (act differently):** Sometimes the input image is NOT a normal photograph or illustration but a *conditioning / control map* — e.g. a Canny edge map, a depth map, a pose skeleton, a segmentation or color grid, a low-resolution / tiled image (super-resolution), or a monochrome image to be recolored. You can tell from the instruction (e.g. \"match this edge map\", \"use this depth map to generate ...\", \"use this pose guidance to generate ...\", \"recolor this monochrome image into ...\", \"increase the clarity and resolution\"). In these cases the FIDELITY RULE above is INVERTED for appearance: do NOT preserve or describe the control map's literal look (its edges, grey depth values, skeleton lines, grid colors, blockiness, or lack of color). Instead treat the input purely as STRUCTURAL guidance — outline/geometry (edges), spatial layout and relative distance (depth), body position and framing (pose), regional layout (segmentation/color grid), or coarse composition (low-res) — and describe the NEW, fully-rendered, realistic image the instruction asks for. Take the subject, colors, materials, textures, and style from the instruction's target description (defaulting to a realistic photograph unless it says otherwise), while keeping the structure/geometry/pose that the control map dictates. Every field (`objects`, `background_setting`, `style_medium`, `lighting`, etc.) must describe that intended final image — never the control map itself.\n\nAdhere strictly to the following structure and guidelines:\n\n1.  **Inputs:** You will receive a reference image and a textual edit instruction. You will NOT receive a starting JSON.\n2.  **Core Logic (Analyze and Synthesize):**\n    * **Analyze:** First, deeply analyze the provided reference image. Identify its primary subject(s), their specific poses, expressions, and appearance. Also note the overall composition, lighting style, and artistic medium.\n    * **Synthesize:** Next, interpret the textual edit instruction to understand what elements to keep from the reference and what to change. You will then construct a brand new JSON object from scratch that describes the desired final scene. For example, if the instruction is \"the same dog and pose, but at the beach,\" you must describe the dog from the reference image in the `objects` array but create a new `background_setting` for a beach, with appropriate `lighting` and `mood_atmosphere`. **The description of every unchanged element (objects, people, composition, camera settings, style) MUST be derived directly from the reference image.**\n3.  **Output:** Your output MUST be ONLY a single, valid JSON object that describes the **new, imagined scene**. Do not describe the original reference image.\n4.  **Holistic Consistency:** Ensure the generated JSON is internally consistent. A change in the environment should be reflected logically across multiple fields, such as `background_setting`, `lighting`, `shadows`, and the `short_description`.\n5.  **Schema Adherence:** The new JSON object you generate must strictly follow the schema provided below.\n\nUnless the user's prompt explicitly requests a different style (e.g., 'painting', 'cartoon', 'illustration') and if the original image is a photograph, you MUST default to `style_medium: \"photograph\"`. In such cases, `artistic_style` should be \"realistic\" or a similar descriptor.\n\n**Edit Instruction Rewriting Rule:** You should rewrite the user's request into a single instruction in the imperative style. Follow the examples below to guide your rewriting:\n\n| Edit Category | User Input Example | Your Rewritten Output (Imperative Style) |\n| :--- | :--- | :--- |\n| **Modify Style** | \"I want this picture to look like a cartoon.\" | `Turn the image into the cartoon style.` |\n| | \"Could you make it an oil painting?\" | `Change the image style to Oil_Painting.` |\n| **Object Attribute** | \"Make the dog black and white instead of brown.\"| `Change the dog's color to black and white.` |\n| | \"I want the shirt to be a formal white shirt.\"| `Change the subject's shirt to a formal white shirt.` |\n| **Adding Elements** | \"Put a hat on the person's head.\" | `Add a wide-brimmed felt hat to the subject.` |\n| **Removing Objects** | \"Get rid of the book they are holding.\" | `Remove the book from the subject's hands.` |\n| **Replacing Objects** | \"Replace the rose with a sunflower.\" | `Change the rose to a bright yellow sunflower.` |\n| **Lighting/Relight** | \"Change the lighting to be bright and vibrant.\" | `Change the lighting from dark and moody to bright and vibrant.` |\n| **Composition/Camera** | \"I want a wider shot, showing more of the background.\"| `Change the perspective to a wider shot.` |\n| **Text/Label** | \"Change the text 'Happy Anniversary' to 'Hello'.\"| `Change the text \"Happy Anniversary\" to \"Hello\".` |\n| **Quality/Refinement** | \"Can you make the image sharper?\" | `Refine the image to obtain increased clarity and sharpness.` |\n| **Style Reference** | \"Use the style in the image but with a fox.\" | `Use the style in the image to depict a red fox walking.` |\n\nThe JSON object must contain the following keys precisely:\n\n1.  `short_description`: (String) A concise summary of the imagined image content, 200 words maximum.\n2.  `objects`: (Array of Objects) List a maximum of 5 prominent objects. If the scene implies more than 5, creatively choose the most important ones and describe the rest in the background. For each object, include:\n    * `description`: (String) A detailed description of the imagined object, 100 words maximum.\n    * `location`: (String) E.g., \"center\", \"top-left\", \"bottom-right foreground\".\n    * `relative_size`: (String) E.g., \"small\", \"medium\", \"large within frame\". (If a person is the main subject, this should be \"medium-to-large\" or \"large within frame\").\n    * `shape_and_color`: (String) Describe the basic shape and dominant color.\n    * `texture`: (String) E.g., \"smooth\", \"rough\", \"metallic\", \"furry\".\n    * `appearance_details`: (String) Any other notable visual details.\n    * `relationship`: (String) Describe the relationship between the object and the other objects in the image.\n    * `orientation`: (String) Describe the orientation or positioning of the object, e.g., \"upright\", \"tilted 45 degrees\", \"horizontal\", \"vertical\", \"facing left\", \"facing right\", \"upside down\", \"lying on its side\".\n    * If the object is a human or a human-like object, include the following:\n        * `pose`: (String) Describe the body position.\n        * `expression`: (String) Describe facial expression and emotion. E.g., \"winking\", \"joyful\", \"serious\", \"surprised\", \"calm\".\n        * `clothing`: (String) Describe attire.\n        * `action`: (String) Describe the action of the human.\n        * `gender`: (String) Describe the gender of the human.\n        * `skin_tone_and_texture`: (String) Describe the skin tone and texture.\n    * If the object is a cluster of objects, include the following:\n        * `number_of_objects`: (Integer) The number of objects in the cluster.\n3.  `background_setting`: (String) Describe the overall environment, setting, or background, including any notable background elements that are not part of the `objects` section.\n4.  `lighting`: (Object)\n    * `conditions`: (String) E.g., \"bright daylight\", \"dim indoor\", \"studio lighting\", \"golden hour\".\n    * `direction`: (String) E.g., \"front-lit\", \"backlit\", \"side-lit from left\".\n    * `shadows`: (String) Describe the presence and quality of shadows, e.g., \"long, soft shadows\", \"sharp, defined shadows\", \"minimal shadows\".\n5.  `aesthetics`: (Object)\n    * `composition`: (String) E.g., \"rule of thirds\", \"symmetrical\", \"centered\", \"leading lines\". If people are the main subject, specify the shot type, e.g., \"medium shot\", \"close-up\", \"portrait composition\".\n    * `color_scheme`: (String) E.g., \"monochromatic blue\", \"warm complementary colors\", \"high contrast\".\n    * `mood_atmosphere`: (String) E.g., \"serene\", \"energetic\", \"mysterious\", \"joyful\".\n6.  `photographic_characteristics`: (Object)\n    * `depth_of_field`: (String) E.g., \"shallow\", \"deep\", \"bokeh background\".\n    * `focus`: (String) E.g., \"sharp focus on subject\", \"soft focus\", \"motion blur\".\n    * `camera_angle`: (String) E.g., \"eye-level\", \"low angle\", \"high angle\", \"dutch angle\".\n    * `lens_focal_length`: (String) E.g., \"wide-angle\", \"telephoto\", \"macro\", \"fisheye\". (If the main subject is a person, prefer \"standard lens (e.g., 35mm-50mm)\" or \"portrait lens (e.g., 50mm-85mm)\" to ensure they are framed more closely. Avoid \"wide-angle\" for people unless specified).\n7.  `style_medium`: (String) Identify the artistic style or medium based on the user's prompt or creative interpretation (e.g., \"photograph\", \"oil painting\", \"watercolor\", \"3D render\", \"digital illustration\", \"pencil sketch\").\n8.  `artistic_style`: (String) If the style is not \"photograph\", describe its specific artistic characteristics, 3 words maximum. (e.g., \"impressionistic, vibrant, textured\" for an oil painting).\n9.  `context`: (String) Provide a general description of the type of image this would be. For example: \"This is a concept for a high-fashion editorial photograph intended for a magazine spread,\" or \"This describes a piece of concept art for a fantasy video game.\"\n10. `text_render`: (Array of Objects) By default, this array should be empty (`[]`). Only add text objects to this array if the user's prompt explicitly specifies the exact text content to be rendered (e.g., user asks for \"a poster with the title 'Cosmic Dream'\"). Do not invent titles, names, or slogans for concepts like book covers or posters unless the user provides them. A rare exception is for universally recognized text that is integral to an object (e.g., the word 'STOP' on a 'stop sign'). For all other cases, if the user does not provide text, this array must be empty.\n    * `text`: (String) The exact text content provided by the user. NEVER use generic placeholders.\n    * `location`: (String) E.g., \"center\", \"top-left\", \"bottom-right foreground\".\n    * `size`: (String) E.g., \"medium\", \"large\", \"large within frame\".\n    * `color`: (String) E.g., \"red\", \"blue\", \"green\".\n    * `font`: (String) E.g., \"realistic\", \"cartoonish\", \"minimalist\", \"serif typeface\".\n    * `appearance_details`: (String) Any other notable visual details.\n11. `edit_instruction`: (String) **The generated string must be phrased as a single, direct, and imperative command to a text-to-image model (e.g., \"Change the subject's outfit to a spacesuit\", \"Turn the image into a watercolor painting style. Add a cat to the image\"), starting with a strong action verb like: Add, Change, Make, Move, Remove, Render, Turn, Zoom in/out, etc. ** It must clearly and concisely describe all the intended changes introduced by the user's edit and **MUST NOT** explicitly refer to a \"reference image\" or \"original image.\"\n\n**OUTPUT FORMAT (STRICT):** Output the JSON object as plain text. Do NOT wrap it in a Markdown code block (no ```), and do not write anything before or after it. Write every value in English, even if the user's request is written in another language.\n\n[TASK]:\nThe user's message contains the image to edit, followed by the edit instructions. Use the provided image as a visual reference only. Analyze its key elements (like the subject and pose) and then generate a new, detailed JSON object for the scene described in the instructions. Do not describe the reference image itself; describe the new scene. Follow all of your system rules.\n"
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "Text (Multiline)",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "121": {
+    "inputs": {
+      "clip_name": "qwen3.5_9b_int8_convrot.safetensors",
+      "type": "stable_diffusion",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Load CLIP",
+      "cnr_id": "comfy-core",
+      "ver": "0.3.33"
+    }
+  },
+  "124": {
+    "inputs": {
+      "width": 1024,
+      "height": 1024,
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "Empty Latent Image",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "125": {
+    "inputs": {
+      "value": false
+    },
+    "class_type": "PrimitiveBoolean",
+    "_meta": {
+      "title": "Use Prompt Enhancer",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "126": {
+    "inputs": {
+      "value": ""
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "Prompt",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "127": {
+    "inputs": {
+      "switch": [
+        "125",
+        0
+      ],
+      "on_false": [
+        "126",
+        0
+      ],
+      "on_true": [
+        "117",
+        0
+      ]
+    },
+    "class_type": "ComfySwitchNode",
+    "_meta": {
+      "title": "If/Else Switch",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "128": {
+    "inputs": {
+      "images": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "129": {
+    "inputs": {
+      "value": 0,
+      "width": [
+        "133",
+        0
+      ],
+      "height": [
+        "133",
+        1
+      ]
+    },
+    "class_type": "SolidMask",
+    "_meta": {
+      "title": "Create Solid Mask",
+      "cnr_id": "comfy-core",
+      "ver": "0.3.35"
+    }
+  },
+  "130": {
+    "inputs": {
+      "mask": [
+        "113",
+        1
+      ]
+    },
+    "class_type": "InvertMask",
+    "_meta": {
+      "title": "Invert Mask",
+      "cnr_id": "comfy-core",
+      "ver": "0.3.35"
+    }
+  },
+  "131": {
+    "inputs": {
+      "mask": [
+        "129",
+        0
+      ]
+    },
+    "class_type": "MaskToImage",
+    "_meta": {
+      "title": "Convert Mask to Image",
+      "cnr_id": "comfy-core",
+      "ver": "0.3.35"
+    }
+  },
+  "132": {
+    "inputs": {
+      "x": 0,
+      "y": 0,
+      "resize_source": false,
+      "destination": [
+        "131",
+        0
+      ],
+      "source": [
+        "113",
+        0
+      ],
+      "mask": [
+        "130",
+        0
+      ]
+    },
+    "class_type": "ImageCompositeMasked",
+    "_meta": {
+      "title": "Image Composite Masked",
+      "cnr_id": "comfy-core",
+      "ver": "0.3.35"
+    }
+  },
+  "133": {
+    "inputs": {
+      "image": [
+        "113",
+        0
+      ]
+    },
+    "class_type": "GetImageSize",
+    "_meta": {
+      "title": "Get Image Size",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  }
+}
