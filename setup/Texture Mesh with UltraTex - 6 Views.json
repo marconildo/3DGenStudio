@@ -1,969 +1,259 @@
 {
-  "id": "150d63bc-534c-48ae-9793-32a3d6ecce3c",
-  "revision": 0,
-  "last_node_id": 42,
-  "last_link_id": 17,
-  "nodes": [
-    {
-      "id": 2,
-      "type": "UltraTexPrep",
-      "pos": [
-        500.095703125,
-        530
+  "2": {
+    "inputs": {
+      "mesh_path": "",
+      "render_size": 4096,
+      "atlas_size": 4096,
+      "uv_mode": "comfy_gpu",
+      "reference_alignment": "fit_front_silhouette",
+      "mask_meaning": "background (LoadImage)",
+      "reference_image": [
+        "19",
+        0
       ],
-      "size": [
-        319.74375,
-        218
-      ],
-      "flags": {},
-      "order": 11,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "reference_image",
-          "type": "IMAGE",
-          "link": 1
-        },
-        {
-          "name": "reference_mask",
-          "shape": 7,
-          "type": "MASK",
-          "link": 2
-        },
-        {
-          "name": "trimesh",
-          "shape": 7,
-          "type": "TRIMESH",
-          "link": 3
-        }
-      ],
-      "outputs": [
-        {
-          "name": "prep",
-          "type": "ULTRATEX_PREP",
-          "links": [
-            12,
-            15
-          ]
-        },
-        {
-          "name": "normal_views",
-          "type": "IMAGE",
-          "links": null
-        },
-        {
-          "name": "reference",
-          "type": "IMAGE",
-          "links": null
-        }
-      ],
-      "properties": {
-        "cnr_id": "ultratex",
-        "ver": "8137da52ed8352305cb7825b39c36a250bf2507a",
-        "Node name for S&R": "UltraTexPrep"
-      },
-      "widgets_values": [
-        "",
-        4096,
-        4096,
-        "comfy_gpu",
-        "fit_front_silhouette",
-        "background (LoadImage)"
-      ],
-      "widgets_values_named": {
-        "mesh_path": "",
-        "render_size": 4096,
-        "atlas_size": 4096,
-        "uv_mode": "comfy_gpu",
-        "reference_alignment": "fit_front_silhouette",
-        "mask_meaning": "background (LoadImage)"
-      }
-    },
-    {
-      "id": 5,
-      "type": "UNETLoader",
-      "pos": [
-        100,
-        130
-      ],
-      "size": [
-        270,
-        82
-      ],
-      "flags": {},
-      "order": 0,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "MODEL",
-          "type": "MODEL",
-          "links": [
-            4
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.42.0",
-        "Node name for S&R": "UNETLoader"
-      },
-      "widgets_values": [
-        "flux-2-klein-base-9b-fp8.safetensors",
-        "default"
-      ],
-      "widgets_values_named": {
-        "unet_name": "flux-2-klein-base-9b-fp8.safetensors",
-        "weight_dtype": "default"
-      }
-    },
-    {
-      "id": 6,
-      "type": "VAELoader",
-      "pos": [
-        100,
-        342
-      ],
-      "size": [
-        270,
-        58
-      ],
-      "flags": {},
-      "order": 1,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "VAE",
-          "type": "VAE",
-          "links": [
-            5
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.42.0",
-        "Node name for S&R": "VAELoader"
-      },
-      "widgets_values": [
-        "flux2-vae.safetensors"
-      ],
-      "widgets_values_named": {
-        "vae_name": "flux2-vae.safetensors"
-      }
-    },
-    {
-      "id": 7,
-      "type": "UltraTexLoraLoader",
-      "pos": [
-        500.095703125,
-        130
-      ],
-      "size": [
-        270,
-        82
-      ],
-      "flags": {},
-      "order": 9,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "model",
-          "type": "MODEL",
-          "link": 4
-        }
-      ],
-      "outputs": [
-        {
-          "name": "MODEL",
-          "type": "MODEL",
-          "links": [
-            9
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "ultratex",
-        "ver": "8137da52ed8352305cb7825b39c36a250bf2507a",
-        "Node name for S&R": "UltraTexLoraLoader"
-      },
-      "widgets_values": [
-        "ultratex_flux2.safetensors",
+      "reference_mask": [
+        "19",
         1
       ],
-      "widgets_values_named": {
-        "lora_name": "ultratex_flux2.safetensors",
-        "strength": 1
-      }
-    },
-    {
-      "id": 8,
-      "type": "UltraTexForegroundDecoder",
-      "pos": [
-        500.095703125,
-        342
-      ],
-      "size": [
-        325.800390625,
-        58
-      ],
-      "flags": {},
-      "order": 10,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "vae",
-          "type": "VAE",
-          "link": 5
-        }
-      ],
-      "outputs": [
-        {
-          "name": "VAE",
-          "type": "VAE",
-          "links": [
-            10
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "ultratex",
-        "ver": "8137da52ed8352305cb7825b39c36a250bf2507a",
-        "Node name for S&R": "UltraTexForegroundDecoder"
-      },
-      "widgets_values": [
-        "ultratex_flux2_decoder.pt"
-      ],
-      "widgets_values_named": {
-        "decoder_name": "ultratex_flux2_decoder.pt"
-      }
-    },
-    {
-      "id": 19,
-      "type": "LoadImage",
-      "pos": [
-        100,
-        530
-      ],
-      "size": [
-        282.798828125,
-        102
-      ],
-      "flags": {},
-      "order": 2,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "IMAGE",
-          "type": "IMAGE",
-          "links": [
-            1
-          ]
-        },
-        {
-          "name": "MASK",
-          "type": "MASK",
-          "links": [
-            2
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.42.0",
-        "Node name for S&R": "LoadImage"
-      },
-      "widgets_values": [
-        "",
-        "image"
-      ],
-      "widgets_values_named": {
-        "image": "",
-        "upload": "image"
-      }
-    },
-    {
-      "id": 22,
-      "type": "UltraTexLoadMesh",
-      "pos": [
-        100,
-        762
-      ],
-      "size": [
-        300.095703125,
-        82
-      ],
-      "flags": {},
-      "order": 3,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "trimesh",
-          "type": "TRIMESH",
-          "links": [
-            3
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "ultratex",
-        "ver": "8137da52ed8352305cb7825b39c36a250bf2507a",
-        "Node name for S&R": "UltraTexLoadMesh"
-      },
-      "widgets_values": [
-        "",
-        false
-      ],
-      "widgets_values_named": {
-        "glb_path": "",
-        "only_vertices_and_faces": false
-      }
-    },
-    {
-      "id": 25,
-      "type": "UltraTexSampler",
-      "pos": [
-        1000.095703125,
-        130
-      ],
-      "size": [
-        307.080078125,
-        418
-      ],
-      "flags": {},
-      "order": 13,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "model",
-          "type": "MODEL",
-          "link": 9
-        },
-        {
-          "name": "vae",
-          "type": "VAE",
-          "link": 10
-        },
-        {
-          "name": "positive",
-          "type": "CONDITIONING",
-          "link": 11
-        },
-        {
-          "name": "prep",
-          "type": "ULTRATEX_PREP",
-          "link": 12
-        },
-        {
-          "name": "negative",
-          "shape": 7,
-          "type": "CONDITIONING",
-          "link": 13
-        },
-        {
-          "name": "init_views",
-          "shape": 7,
-          "type": "IMAGE",
-          "link": null
-        },
-        {
-          "name": "keep_mask",
-          "shape": 7,
-          "type": "MASK",
-          "link": null
-        },
-        {
-          "name": "resolution",
-          "type": "INT",
-          "widget": {
-            "name": "resolution"
-          },
-          "link": 6
-        },
-        {
-          "name": "steps",
-          "type": "INT",
-          "widget": {
-            "name": "steps"
-          },
-          "link": 7
-        },
-        {
-          "name": "seed",
-          "type": "INT",
-          "widget": {
-            "name": "seed"
-          },
-          "link": 8
-        }
-      ],
-      "outputs": [
-        {
-          "name": "views",
-          "type": "IMAGE",
-          "links": [
-            16
-          ]
-        },
-        {
-          "name": "masks",
-          "type": "MASK",
-          "links": null
-        },
-        {
-          "name": "atlas",
-          "type": "IMAGE",
-          "links": null
-        }
-      ],
-      "properties": {
-        "cnr_id": "ultratex",
-        "ver": "8137da52ed8352305cb7825b39c36a250bf2507a",
-        "Node name for S&R": "UltraTexSampler"
-      },
-      "widgets_values": [
-        2048,
-        25,
-        42,
-        "randomize",
-        4,
-        true,
-        0,
-        "ultratex_sparse",
-        0.4,
-        8192,
-        1
-      ],
-      "widgets_values_named": {
-        "resolution": 2048,
-        "steps": 25,
-        "seed": 42,
-        "control_after_generate": "randomize",
-        "guidance": 4,
-        "drop_background_tokens": true,
-        "memory_factor": 0,
-        "attention": "ultratex_sparse",
-        "sparse_topk": 0.4,
-        "token_chunk": 8192,
-        "denoise": 1
-      }
-    },
-    {
-      "id": 32,
-      "type": "UltraTexBake",
-      "pos": [
-        1407.17578125,
-        130
-      ],
-      "size": [
-        348.05859375,
-        374
-      ],
-      "flags": {},
-      "order": 14,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "prep",
-          "type": "ULTRATEX_PREP",
-          "link": 15
-        },
-        {
-          "name": "albedo_views",
-          "type": "IMAGE",
-          "link": 16
-        },
-        {
-          "name": "metallic_roughness_views",
-          "shape": 7,
-          "type": "IMAGE",
-          "link": null
-        },
-        {
-          "name": "prep_2",
-          "shape": 7,
-          "type": "ULTRATEX_PREP",
-          "link": null
-        },
-        {
-          "name": "albedo_views_2",
-          "shape": 7,
-          "type": "IMAGE",
-          "link": null
-        },
-        {
-          "name": "metallic_roughness_views_2",
-          "shape": 7,
-          "type": "IMAGE",
-          "link": null
-        },
-        {
-          "name": "texture_size",
-          "type": "INT",
-          "widget": {
-            "name": "texture_size"
-          },
-          "link": 14
-        }
-      ],
-      "outputs": [
-        {
-          "name": "trimesh",
-          "type": "TRIMESH",
-          "links": null
-        },
-        {
-          "name": "albedo_texture",
-          "type": "IMAGE",
-          "links": null
-        },
-        {
-          "name": "preview",
-          "type": "IMAGE",
-          "links": null
-        },
-        {
-          "name": "glb_path",
-          "type": "STRING",
-          "links": null
-        },
-        {
-          "name": "model_3d",
-          "type": "FILE_3D_GLB",
-          "links": null
-        },
-        {
-          "name": "bake_state",
-          "type": "ULTRATEX_BAKE",
-          "links": null
-        }
-      ],
-      "properties": {
-        "cnr_id": "ultratex",
-        "ver": "8137da52ed8352305cb7825b39c36a250bf2507a",
-        "Node name for S&R": "UltraTexBake"
-      },
-      "widgets_values": [
-        4096,
-        "3DGenStudioUltraTex",
-        4,
-        0.5,
-        6,
-        "all",
-        "two_band",
-        32,
-        true,
-        "mesh"
-      ],
-      "widgets_values_named": {
-        "texture_size": 4096,
-        "filename_prefix": "3DGenStudioUltraTex",
-        "view_weight_power": 4,
-        "best_view_mix": 0.5,
-        "edge_feather_px": 6,
-        "views_2_use": "all",
-        "fusion": "two_band",
-        "detail_sharpness": 32,
-        "exposure_match": true,
-        "hole_fill": "mesh"
-      }
-    },
-    {
-      "id": 36,
-      "type": "UltraTexTextEncode",
-      "pos": [
-        500.095703125,
-        878
-      ],
-      "size": [
-        400,
-        200
-      ],
-      "flags": {},
-      "order": 12,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "clip",
-          "type": "CLIP",
-          "link": 17
-        }
-      ],
-      "outputs": [
-        {
-          "name": "CONDITIONING",
-          "type": "CONDITIONING",
-          "links": [
-            11,
-            13
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "ultratex",
-        "ver": "8137da52ed8352305cb7825b39c36a250bf2507a",
-        "Node name for S&R": "UltraTexTextEncode"
-      },
-      "widgets_values": [
-        ""
-      ],
-      "widgets_values_named": {
-        "text": ""
-      }
-    },
-    {
-      "id": 38,
-      "type": "PrimitiveInt",
-      "pos": [
-        100,
-        974
-      ],
-      "size": [
-        270,
-        82
-      ],
-      "flags": {},
-      "order": 4,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "INT",
-          "type": "INT",
-          "links": [
-            6
-          ]
-        }
-      ],
-      "title": "Resolution",
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.42.0",
-        "Node name for S&R": "PrimitiveInt"
-      },
-      "widgets_values": [
-        1024,
-        "fixed"
-      ],
-      "widgets_values_named": {
-        "value": 1024,
-        "control_after_generate": "fixed"
-      }
-    },
-    {
-      "id": 39,
-      "type": "PrimitiveInt",
-      "pos": [
-        100,
-        1186
-      ],
-      "size": [
-        270,
-        82
-      ],
-      "flags": {},
-      "order": 5,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "INT",
-          "type": "INT",
-          "links": [
-            14
-          ]
-        }
-      ],
-      "title": "Texture Size",
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.42.0",
-        "Node name for S&R": "PrimitiveInt"
-      },
-      "widgets_values": [
-        2048,
-        "fixed"
-      ],
-      "widgets_values_named": {
-        "value": 2048,
-        "control_after_generate": "fixed"
-      }
-    },
-    {
-      "id": 40,
-      "type": "PrimitiveInt",
-      "pos": [
-        100,
-        1398
-      ],
-      "size": [
-        270,
-        82
-      ],
-      "flags": {},
-      "order": 6,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "INT",
-          "type": "INT",
-          "links": [
-            8
-          ]
-        }
-      ],
-      "title": "Seed",
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.42.0",
-        "Node name for S&R": "PrimitiveInt"
-      },
-      "widgets_values": [
-        12345,
-        "fixed"
-      ],
-      "widgets_values_named": {
-        "value": 12345,
-        "control_after_generate": "fixed"
-      }
-    },
-    {
-      "id": 41,
-      "type": "PrimitiveInt",
-      "pos": [
-        100,
-        1610
-      ],
-      "size": [
-        270,
-        82
-      ],
-      "flags": {},
-      "order": 7,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "INT",
-          "type": "INT",
-          "links": [
-            7
-          ]
-        }
-      ],
-      "title": "Steps",
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.42.0",
-        "Node name for S&R": "PrimitiveInt"
-      },
-      "widgets_values": [
-        4,
-        "fixed"
-      ],
-      "widgets_values_named": {
-        "value": 4,
-        "control_after_generate": "fixed"
-      }
-    },
-    {
-      "id": 42,
-      "type": "CLIPLoader",
-      "pos": [
-        100,
-        1822
-      ],
-      "size": [
-        270,
-        106
-      ],
-      "flags": {},
-      "order": 8,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "CLIP",
-          "type": "CLIP",
-          "links": [
-            17
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.42.0",
-        "Node name for S&R": "CLIPLoader"
-      },
-      "widgets_values": [
-        "qwen_3_8b_fp8mixed.safetensors",
-        "flux2",
-        "default"
-      ],
-      "widgets_values_named": {
-        "clip_name": "qwen_3_8b_fp8mixed.safetensors",
-        "type": "flux2",
-        "device": "default"
-      }
-    }
-  ],
-  "links": [
-    [
-      1,
-      19,
-      0,
-      2,
-      0,
-      "IMAGE"
-    ],
-    [
-      2,
-      19,
-      1,
-      2,
-      1,
-      "MASK"
-    ],
-    [
-      3,
-      22,
-      0,
-      2,
-      2,
-      "TRIMESH"
-    ],
-    [
-      4,
-      5,
-      0,
-      7,
-      0,
-      "MODEL"
-    ],
-    [
-      5,
-      6,
-      0,
-      8,
-      0,
-      "VAE"
-    ],
-    [
-      6,
-      38,
-      0,
-      25,
-      7,
-      "INT"
-    ],
-    [
-      7,
-      41,
-      0,
-      25,
-      8,
-      "INT"
-    ],
-    [
-      8,
-      40,
-      0,
-      25,
-      9,
-      "INT"
-    ],
-    [
-      9,
-      7,
-      0,
-      25,
-      0,
-      "MODEL"
-    ],
-    [
-      10,
-      8,
-      0,
-      25,
-      1,
-      "VAE"
-    ],
-    [
-      11,
-      36,
-      0,
-      25,
-      2,
-      "CONDITIONING"
-    ],
-    [
-      12,
-      2,
-      0,
-      25,
-      3,
-      "ULTRATEX_PREP"
-    ],
-    [
-      13,
-      36,
-      0,
-      25,
-      4,
-      "CONDITIONING"
-    ],
-    [
-      14,
-      39,
-      0,
-      32,
-      6,
-      "INT"
-    ],
-    [
-      15,
-      2,
-      0,
-      32,
-      0,
-      "ULTRATEX_PREP"
-    ],
-    [
-      16,
-      25,
-      0,
-      32,
-      1,
-      "IMAGE"
-    ],
-    [
-      17,
-      42,
-      0,
-      36,
-      0,
-      "CLIP"
-    ]
-  ],
-  "groups": [],
-  "config": {},
-  "extra": {
-    "ds": {
-      "scale": 0.6115909044841497,
-      "offset": [
-        917.5139928502559,
-        107.89554829462122
+      "trimesh": [
+        "22",
+        0
       ]
     },
-    "frontendVersion": "1.57.1",
-    "VHS_latentpreview": false,
-    "VHS_latentpreviewrate": 0,
-    "VHS_MetadataImage": true,
-    "VHS_KeepIntermediate": true
+    "class_type": "UltraTexPrep",
+    "_meta": {
+      "title": "UltraTex Prep (mesh + reference)",
+      "cnr_id": "ultratex",
+      "ver": "8137da52ed8352305cb7825b39c36a250bf2507a"
+    }
   },
-  "version": 0.4
+  "5": {
+    "inputs": {
+      "unet_name": "flux-2-klein-base-9b-fp8.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Load Diffusion Model",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "6": {
+    "inputs": {
+      "vae_name": "flux2-vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "7": {
+    "inputs": {
+      "lora_name": "ultratex_flux2.safetensors",
+      "strength": 1,
+      "model": [
+        "5",
+        0
+      ]
+    },
+    "class_type": "UltraTexLoraLoader",
+    "_meta": {
+      "title": "UltraTex Load LoRA",
+      "cnr_id": "ultratex",
+      "ver": "8137da52ed8352305cb7825b39c36a250bf2507a"
+    }
+  },
+  "8": {
+    "inputs": {
+      "decoder_name": "ultratex_flux2_decoder.pt",
+      "vae": [
+        "6",
+        0
+      ]
+    },
+    "class_type": "UltraTexForegroundDecoder",
+    "_meta": {
+      "title": "UltraTex Foreground VAE Decoder",
+      "cnr_id": "ultratex",
+      "ver": "8137da52ed8352305cb7825b39c36a250bf2507a"
+    }
+  },
+  "19": {
+    "inputs": {
+      "image": ""
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "22": {
+    "inputs": {
+      "glb_path": "",
+      "only_vertices_and_faces": false
+    },
+    "class_type": "UltraTexLoadMesh",
+    "_meta": {
+      "title": "UltraText Load Mesh",
+      "cnr_id": "ultratex",
+      "ver": "8137da52ed8352305cb7825b39c36a250bf2507a"
+    }
+  },
+  "25": {
+    "inputs": {
+      "resolution": [
+        "38",
+        0
+      ],
+      "steps": [
+        "41",
+        0
+      ],
+      "seed": [
+        "40",
+        0
+      ],
+      "guidance": 4,
+      "drop_background_tokens": true,
+      "memory_factor": 0,
+      "attention": "ultratex_sparse",
+      "sparse_topk": 0.4,
+      "token_chunk": 8192,
+      "denoise": 1,
+      "model": [
+        "7",
+        0
+      ],
+      "vae": [
+        "8",
+        0
+      ],
+      "positive": [
+        "36",
+        0
+      ],
+      "prep": [
+        "2",
+        0
+      ],
+      "negative": [
+        "36",
+        0
+      ]
+    },
+    "class_type": "UltraTexSampler",
+    "_meta": {
+      "title": "UltraTex Sampler",
+      "cnr_id": "ultratex",
+      "ver": "8137da52ed8352305cb7825b39c36a250bf2507a"
+    }
+  },
+  "32": {
+    "inputs": {
+      "texture_size": [
+        "39",
+        0
+      ],
+      "filename_prefix": "3DGenStudioUltraTex",
+      "view_weight_power": 4,
+      "best_view_mix": 0.5,
+      "edge_feather_px": 6,
+      "views_2_use": "all",
+      "fusion": "two_band",
+      "detail_sharpness": 32,
+      "exposure_match": true,
+      "hole_fill": "mesh",
+      "prep": [
+        "2",
+        0
+      ],
+      "albedo_views": [
+        "25",
+        0
+      ]
+    },
+    "class_type": "UltraTexBake",
+    "_meta": {
+      "title": "UltraTex Bake Texture",
+      "cnr_id": "ultratex",
+      "ver": "8137da52ed8352305cb7825b39c36a250bf2507a"
+    }
+  },
+  "36": {
+    "inputs": {
+      "text": "",
+      "clip": [
+        "42",
+        0
+      ]
+    },
+    "class_type": "UltraTexTextEncode",
+    "_meta": {
+      "title": "UltraTex Text Encode",
+      "cnr_id": "ultratex",
+      "ver": "8137da52ed8352305cb7825b39c36a250bf2507a"
+    }
+  },
+  "38": {
+    "inputs": {
+      "value": 1024
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Resolution",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "39": {
+    "inputs": {
+      "value": 2048
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Texture Size",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "40": {
+    "inputs": {
+      "value": 12345
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Seed",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "41": {
+    "inputs": {
+      "value": 4
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Steps",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "42": {
+    "inputs": {
+      "clip_name": "qwen_3_8b_fp8mixed.safetensors",
+      "type": "flux2",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Load CLIP",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  }
 }
