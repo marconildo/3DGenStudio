@@ -22,7 +22,9 @@
     },
     "class_type": "UltraTexPrep",
     "_meta": {
-      "title": "UltraTex Prep (mesh + reference)"
+      "title": "UltraTex Prep (mesh + reference)",
+      "cnr_id": "ultratex",
+      "ver": "8137da52ed8352305cb7825b39c36a250bf2507a"
     }
   },
   "4": {
@@ -43,7 +45,7 @@
       "drop_background_tokens": true,
       "memory_factor": 0,
       "attention": "ultratex_sparse",
-      "sparse_topk": 0.2,
+      "sparse_topk": 0.4,
       "token_chunk": 8192,
       "denoise": 1,
       "model": [
@@ -69,7 +71,9 @@
     },
     "class_type": "UltraTexSampler",
     "_meta": {
-      "title": "UltraTex Sampler (Albedo)"
+      "title": "UltraTex Sampler (Albedo)",
+      "cnr_id": "ultratex",
+      "ver": "8137da52ed8352305cb7825b39c36a250bf2507a"
     }
   },
   "5": {
@@ -79,7 +83,9 @@
     },
     "class_type": "UNETLoader",
     "_meta": {
-      "title": "Load Diffusion Model"
+      "title": "Load Diffusion Model",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
     }
   },
   "6": {
@@ -88,7 +94,9 @@
     },
     "class_type": "VAELoader",
     "_meta": {
-      "title": "Load VAE"
+      "title": "Load VAE",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
     }
   },
   "7": {
@@ -102,7 +110,9 @@
     },
     "class_type": "UltraTexLoraLoader",
     "_meta": {
-      "title": "UltraTex Load LoRA"
+      "title": "UltraTex Load LoRA",
+      "cnr_id": "ultratex",
+      "ver": "8137da52ed8352305cb7825b39c36a250bf2507a"
     }
   },
   "8": {
@@ -115,7 +125,9 @@
     },
     "class_type": "UltraTexForegroundDecoder",
     "_meta": {
-      "title": "UltraTex Foreground VAE Decoder"
+      "title": "UltraTex Foreground VAE Decoder",
+      "cnr_id": "ultratex",
+      "ver": "8137da52ed8352305cb7825b39c36a250bf2507a"
     }
   },
   "9": {
@@ -126,7 +138,9 @@
     },
     "class_type": "CLIPLoader",
     "_meta": {
-      "title": "Load CLIP"
+      "title": "Load CLIP",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
     }
   },
   "12": {
@@ -140,6 +154,10 @@
       "best_view_mix": 0.5,
       "edge_feather_px": 6,
       "views_2_use": "all",
+      "fusion": "two_band",
+      "detail_sharpness": 32,
+      "exposure_match": true,
+      "hole_fill": "mesh",
       "prep": [
         "2",
         0
@@ -155,7 +173,9 @@
     },
     "class_type": "UltraTexBake",
     "_meta": {
-      "title": "UltraTex Bake Texture"
+      "title": "UltraTex Bake Texture",
+      "cnr_id": "ultratex",
+      "ver": "8137da52ed8352305cb7825b39c36a250bf2507a"
     }
   },
   "19": {
@@ -164,7 +184,9 @@
     },
     "class_type": "LoadImage",
     "_meta": {
-      "title": "Load Image"
+      "title": "Load Image",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
     }
   },
   "22": {
@@ -174,15 +196,14 @@
     },
     "class_type": "UltraTexLoadMesh",
     "_meta": {
-      "title": "UltraText Load Mesh"
+      "title": "UltraText Load Mesh",
+      "cnr_id": "ultratex",
+      "ver": "8137da52ed8352305cb7825b39c36a250bf2507a"
     }
   },
   "24": {
     "inputs": {
-      "resolution": [
-        "31",
-        0
-      ],
+      "resolution": 1024,
       "steps": [
         "32",
         0
@@ -195,7 +216,7 @@
       "drop_background_tokens": true,
       "memory_factor": 0,
       "attention": "ultratex_sparse",
-      "sparse_topk": 0.2,
+      "sparse_topk": 0.4,
       "token_chunk": 8192,
       "denoise": 1,
       "model": [
@@ -221,7 +242,9 @@
     },
     "class_type": "UltraTexSampler",
     "_meta": {
-      "title": "UltraTex Sampler (Metallic Roughness)"
+      "title": "UltraTex Sampler (Metallic Roughness)",
+      "cnr_id": "ultratex",
+      "ver": "8137da52ed8352305cb7825b39c36a250bf2507a"
     }
   },
   "28": {
@@ -234,7 +257,9 @@
     },
     "class_type": "UltraTexTextEncode",
     "_meta": {
-      "title": "UltraTex Text Encode"
+      "title": "UltraTex Text Encode",
+      "cnr_id": "ultratex",
+      "ver": "8137da52ed8352305cb7825b39c36a250bf2507a"
     }
   },
   "29": {
@@ -243,7 +268,9 @@
     },
     "class_type": "PrimitiveInt",
     "_meta": {
-      "title": "Seed"
+      "title": "Seed",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
     }
   },
   "30": {
@@ -252,7 +279,9 @@
     },
     "class_type": "PrimitiveInt",
     "_meta": {
-      "title": "Texture Size"
+      "title": "Texture Size",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
     }
   },
   "31": {
@@ -261,16 +290,20 @@
     },
     "class_type": "PrimitiveInt",
     "_meta": {
-      "title": "Resolution"
+      "title": "Resolution",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
     }
   },
   "32": {
     "inputs": {
-      "value": 25
+      "value": 4
     },
     "class_type": "PrimitiveInt",
     "_meta": {
-      "title": "Steps"
+      "title": "Steps",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
     }
   },
   "33": {
@@ -284,7 +317,9 @@
     },
     "class_type": "UltraTexLoraLoader",
     "_meta": {
-      "title": "UltraTex Load LoRA"
+      "title": "UltraTex Load LoRA",
+      "cnr_id": "ultratex",
+      "ver": "8137da52ed8352305cb7825b39c36a250bf2507a"
     }
   }
 }
