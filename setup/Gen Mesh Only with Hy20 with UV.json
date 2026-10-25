@@ -5,7 +5,9 @@
     },
     "class_type": "LoadImage",
     "_meta": {
-      "title": "Load Image"
+      "title": "Load Image",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
     }
   },
   "5": {
@@ -20,17 +22,19 @@
         0
       ],
       "image": [
-        "75",
+        "88",
         0
       ],
       "mask": [
-        "76",
+        "91",
         0
       ]
     },
     "class_type": "Hy3DGenerateMesh",
     "_meta": {
-      "title": "Hy3DGenerateMesh"
+      "title": "Hy3DGenerateMesh",
+      "aux_id": "visualbruno/ComfyUI-Hunyuan3DWrapper",
+      "ver": "1cc6627e847e80a16140e75e421fed34ff9ea7b5"
     }
   },
   "6": {
@@ -53,7 +57,9 @@
     },
     "class_type": "Hy3DVAEDecode",
     "_meta": {
-      "title": "Hy3D VAE Decode"
+      "title": "Hy3D VAE Decode",
+      "aux_id": "visualbruno/ComfyUI-Hunyuan3DWrapper",
+      "ver": "1cc6627e847e80a16140e75e421fed34ff9ea7b5"
     }
   },
   "27": {
@@ -70,13 +76,15 @@
     },
     "class_type": "Hy3DPostprocessMesh",
     "_meta": {
-      "title": "Hy3D Postprocess Mesh"
+      "title": "Hy3D Postprocess Mesh",
+      "aux_id": "visualbruno/ComfyUI-Hunyuan3DWrapper",
+      "ver": "1cc6627e847e80a16140e75e421fed34ff9ea7b5"
     }
   },
   "75": {
     "inputs": {
-      "left": 80,
-      "right": 80,
+      "left": 64,
+      "right": 64,
       "top": 0,
       "bottom": 0,
       "extra_padding": 0,
@@ -93,45 +101,124 @@
     },
     "class_type": "ImagePadKJ",
     "_meta": {
-      "title": "ImagePad KJ"
-    }
-  },
-  "76": {
-    "inputs": {
-      "mask": [
-        "75",
-        1
-      ]
-    },
-    "class_type": "InvertMask",
-    "_meta": {
-      "title": "Invert Mask"
+      "title": "ImagePad KJ",
+      "cnr_id": "comfyui-kjnodes",
+      "ver": "37a6c45a07bb06cc392431ddbbc741e691c467f4"
     }
   },
   "86": {
     "inputs": {},
     "class_type": "Hy3DMiniTurboModelLoader",
     "_meta": {
-      "title": "Hy3D - Mini Turbo Model Loader"
+      "title": "Hy3D - Mini Turbo Model Loader",
+      "aux_id": "visualbruno/ComfyUI-Hunyuan3DWrapper",
+      "ver": "1cc6627e847e80a16140e75e421fed34ff9ea7b5"
     }
   },
   "88": {
     "inputs": {
+      "switch": [
+        "89",
+        0
+      ],
+      "on_false": [
+        "1",
+        0
+      ],
+      "on_true": [
+        "75",
+        0
+      ]
+    },
+    "class_type": "ComfySwitchNode",
+    "_meta": {
+      "title": "If/Else Switch",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "89": {
+    "inputs": {
+      "value": true
+    },
+    "class_type": "PrimitiveBoolean",
+    "_meta": {
+      "title": "Fix Distortion",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "90": {
+    "inputs": {
+      "switch": [
+        "89",
+        0
+      ],
+      "on_false": [
+        "1",
+        1
+      ],
+      "on_true": [
+        "75",
+        1
+      ]
+    },
+    "class_type": "ComfySwitchNode",
+    "_meta": {
+      "title": "If/Else Switch",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "91": {
+    "inputs": {
+      "mask": [
+        "90",
+        0
+      ]
+    },
+    "class_type": "InvertMask",
+    "_meta": {
+      "title": "Invert Mask",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "92": {
+    "inputs": {
       "segmenter": "pec",
       "resolution": 1024,
       "padding": 1,
-      "weld_distance": 0,
+      "weld_distance": 0.0002,
       "mesh": [
-        "89",
+        "94",
         0
       ]
     },
     "class_type": "UnwrapMesh",
     "_meta": {
-      "title": "Unwrap Mesh UVs"
+      "title": "Unwrap Mesh UVs",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
     }
   },
-  "89": {
+  "93": {
+    "inputs": {
+      "filename_prefix": "3DGenStudioHy20",
+      "image": "",
+      "mesh": [
+        "92",
+        0
+      ]
+    },
+    "class_type": "SaveGLB",
+    "_meta": {
+      "title": "Save 3D Model",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "94": {
     "inputs": {
       "trimesh": [
         "27",
@@ -140,21 +227,9 @@
     },
     "class_type": "VisualBrunoToolsTrimeshToMesh",
     "_meta": {
-      "title": "3d - Trimesh to Mesh"
-    }
-  },
-  "90": {
-    "inputs": {
-      "filename_prefix": "3DGenStudioHy20",
-      "image": "",
-      "mesh": [
-        "88",
-        0
-      ]
-    },
-    "class_type": "SaveGLB",
-    "_meta": {
-      "title": "Save 3D Model"
+      "title": "3d - Trimesh to Mesh",
+      "cnr_id": "tools",
+      "ver": "21144f8ddcb1afab2c13aceaa6dd2b75846aa21e"
     }
   }
 }

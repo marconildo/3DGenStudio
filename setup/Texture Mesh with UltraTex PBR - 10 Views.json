@@ -1,0 +1,643 @@
+{
+  "2": {
+    "inputs": {
+      "mesh_path": "",
+      "render_size": 4096,
+      "atlas_size": 4096,
+      "uv_mode": "comfy_gpu",
+      "reference_alignment": "fit_front_silhouette",
+      "mask_meaning": "background (LoadImage)",
+      "reference_image": [
+        "48",
+        0
+      ],
+      "reference_mask": [
+        "47",
+        0
+      ],
+      "trimesh": [
+        "22",
+        0
+      ]
+    },
+    "class_type": "UltraTexPrep",
+    "_meta": {
+      "title": "UltraTex Prep (mesh + reference)",
+      "cnr_id": "ultratex",
+      "ver": "1f2392308e7d08374cb1c3844afe7e3ee2fadbe0"
+    }
+  },
+  "5": {
+    "inputs": {
+      "unet_name": "flux-2-klein-base-9b-fp8.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Load Diffusion Model",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "6": {
+    "inputs": {
+      "vae_name": "flux2-vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "7": {
+    "inputs": {
+      "lora_name": "ultratex_flux2.safetensors",
+      "strength": 1,
+      "model": [
+        "5",
+        0
+      ]
+    },
+    "class_type": "UltraTexLoraLoader",
+    "_meta": {
+      "title": "UltraTex Load LoRA",
+      "cnr_id": "ultratex",
+      "ver": "1f2392308e7d08374cb1c3844afe7e3ee2fadbe0"
+    }
+  },
+  "8": {
+    "inputs": {
+      "decoder_name": "ultratex_flux2_decoder.pt",
+      "vae": [
+        "6",
+        0
+      ]
+    },
+    "class_type": "UltraTexForegroundDecoder",
+    "_meta": {
+      "title": "UltraTex Foreground VAE Decoder",
+      "cnr_id": "ultratex",
+      "ver": "1f2392308e7d08374cb1c3844afe7e3ee2fadbe0"
+    }
+  },
+  "19": {
+    "inputs": {
+      "image": ""
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "22": {
+    "inputs": {
+      "glb_path": "",
+      "only_vertices_and_faces": false
+    },
+    "class_type": "UltraTexLoadMesh",
+    "_meta": {
+      "title": "UltraText Load Mesh",
+      "cnr_id": "ultratex",
+      "ver": "1f2392308e7d08374cb1c3844afe7e3ee2fadbe0"
+    }
+  },
+  "25": {
+    "inputs": {
+      "resolution": [
+        "38",
+        0
+      ],
+      "steps": [
+        "41",
+        0
+      ],
+      "seed": [
+        "40",
+        0
+      ],
+      "guidance": 4,
+      "drop_background_tokens": true,
+      "memory_factor": 0,
+      "attention": "ultratex_sparse",
+      "sparse_topk": 0.4,
+      "token_chunk": 8192,
+      "denoise": 1,
+      "model": [
+        "7",
+        0
+      ],
+      "vae": [
+        "8",
+        0
+      ],
+      "positive": [
+        "36",
+        0
+      ],
+      "prep": [
+        "2",
+        0
+      ],
+      "negative": [
+        "36",
+        0
+      ]
+    },
+    "class_type": "UltraTexSampler",
+    "_meta": {
+      "title": "UltraTex Sampler",
+      "cnr_id": "ultratex",
+      "ver": "1f2392308e7d08374cb1c3844afe7e3ee2fadbe0"
+    }
+  },
+  "26": {
+    "inputs": {
+      "azimuth": 45,
+      "elevation": 0,
+      "elevation_mode": "per view",
+      "prep": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "UltraTexRotateRig",
+    "_meta": {
+      "title": "UltraTex Rotate Rig (second pass)",
+      "cnr_id": "ultratex",
+      "ver": "1f2392308e7d08374cb1c3844afe7e3ee2fadbe0"
+    }
+  },
+  "27": {
+    "inputs": {
+      "resolution": [
+        "38",
+        0
+      ],
+      "steps": [
+        "41",
+        0
+      ],
+      "seed": [
+        "40",
+        0
+      ],
+      "guidance": 4,
+      "drop_background_tokens": true,
+      "memory_factor": 0,
+      "attention": "ultratex_sparse",
+      "sparse_topk": 0.4,
+      "token_chunk": 8192,
+      "denoise": 1,
+      "model": [
+        "7",
+        0
+      ],
+      "vae": [
+        "8",
+        0
+      ],
+      "positive": [
+        "36",
+        0
+      ],
+      "prep": [
+        "26",
+        0
+      ],
+      "negative": [
+        "36",
+        0
+      ],
+      "init_views": [
+        "31",
+        0
+      ],
+      "keep_mask": [
+        "31",
+        1
+      ]
+    },
+    "class_type": "UltraTexSampler",
+    "_meta": {
+      "title": "UltraTex Sampler",
+      "cnr_id": "ultratex",
+      "ver": "1f2392308e7d08374cb1c3844afe7e3ee2fadbe0"
+    }
+  },
+  "31": {
+    "inputs": {
+      "resolution": [
+        "38",
+        0
+      ],
+      "keep_above": 0.75,
+      "keep_feather": 0.1,
+      "texture": "albedo",
+      "prep": [
+        "26",
+        0
+      ],
+      "source_prep": [
+        "2",
+        0
+      ],
+      "source_views": [
+        "25",
+        0
+      ]
+    },
+    "class_type": "UltraTexRenderViews",
+    "_meta": {
+      "title": "UltraTex Render Views (second pass)",
+      "cnr_id": "ultratex",
+      "ver": "1f2392308e7d08374cb1c3844afe7e3ee2fadbe0"
+    }
+  },
+  "32": {
+    "inputs": {
+      "texture_size": [
+        "39",
+        0
+      ],
+      "filename_prefix": "3DGenStudioUltraTexPBR10Views",
+      "view_weight_power": 4,
+      "best_view_mix": 0.5,
+      "edge_feather_px": 6,
+      "views_2_use": "no top/bottom",
+      "fusion": "two_band",
+      "detail_sharpness": 32,
+      "exposure_match": true,
+      "hole_fill": "mesh",
+      "views_2_weight": 0.6,
+      "prep": [
+        "2",
+        0
+      ],
+      "albedo_views": [
+        "25",
+        0
+      ],
+      "metallic_roughness_views": [
+        "51",
+        0
+      ],
+      "prep_2": [
+        "26",
+        0
+      ],
+      "albedo_views_2": [
+        "27",
+        0
+      ],
+      "metallic_roughness_views_2": [
+        "56",
+        0
+      ]
+    },
+    "class_type": "UltraTexBake",
+    "_meta": {
+      "title": "UltraTex Bake Texture",
+      "cnr_id": "ultratex",
+      "ver": "1f2392308e7d08374cb1c3844afe7e3ee2fadbe0"
+    }
+  },
+  "36": {
+    "inputs": {
+      "text": "",
+      "clip": [
+        "42",
+        0
+      ]
+    },
+    "class_type": "UltraTexTextEncode",
+    "_meta": {
+      "title": "UltraTex Text Encode",
+      "cnr_id": "ultratex",
+      "ver": "1f2392308e7d08374cb1c3844afe7e3ee2fadbe0"
+    }
+  },
+  "38": {
+    "inputs": {
+      "value": 1024
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Resolution",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "39": {
+    "inputs": {
+      "value": 2048
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Texture Size",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "40": {
+    "inputs": {
+      "value": 12345
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Seed",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "41": {
+    "inputs": {
+      "value": 4
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Steps",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "42": {
+    "inputs": {
+      "clip_name": "qwen_3_8b_fp8mixed.safetensors",
+      "type": "flux2",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Load CLIP",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "43": {
+    "inputs": {
+      "model_name": "4xLexicaDAT2_otf.pth"
+    },
+    "class_type": "UpscaleModelLoader",
+    "_meta": {
+      "title": "Load Upscale Model",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "44": {
+    "inputs": {
+      "upscale_model": [
+        "43",
+        0
+      ],
+      "image": [
+        "19",
+        0
+      ]
+    },
+    "class_type": "ImageUpscaleWithModel",
+    "_meta": {
+      "title": "Upscale Image (using Model)",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "45": {
+    "inputs": {
+      "model": "RMBG-2.0",
+      "sensitivity": 1,
+      "process_res": 1024,
+      "mask_blur": 0,
+      "mask_offset": 0,
+      "invert_output": false,
+      "refine_foreground": false,
+      "unload_model": true,
+      "background": "Alpha",
+      "background_color": "#222222",
+      "image": [
+        "44",
+        0
+      ]
+    },
+    "class_type": "RMBG",
+    "_meta": {
+      "title": "Remove Background (RMBG)",
+      "cnr_id": "comfyui-rmbg",
+      "ver": "a66a5e641a54988d80ed6aad18946081c85f309e"
+    }
+  },
+  "46": {
+    "inputs": {
+      "mask": [
+        "45",
+        1
+      ]
+    },
+    "class_type": "InvertMask",
+    "_meta": {
+      "title": "Invert Mask",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "47": {
+    "inputs": {
+      "switch": [
+        "49",
+        0
+      ],
+      "on_false": [
+        "19",
+        1
+      ],
+      "on_true": [
+        "46",
+        0
+      ]
+    },
+    "class_type": "ComfySwitchNode",
+    "_meta": {
+      "title": "If/Else Switch",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "48": {
+    "inputs": {
+      "switch": [
+        "49",
+        0
+      ],
+      "on_false": [
+        "19",
+        0
+      ],
+      "on_true": [
+        "45",
+        0
+      ]
+    },
+    "class_type": "ComfySwitchNode",
+    "_meta": {
+      "title": "If/Else Switch",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "49": {
+    "inputs": {
+      "value": true
+    },
+    "class_type": "PrimitiveBoolean",
+    "_meta": {
+      "title": "Upscale Image",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "50": {
+    "inputs": {
+      "lora_name": "ultratex_flux2_mr.safetensors",
+      "strength": 1,
+      "model": [
+        "5",
+        0
+      ]
+    },
+    "class_type": "UltraTexLoraLoader",
+    "_meta": {
+      "title": "UltraTex Load LoRA",
+      "cnr_id": "ultratex",
+      "ver": "1f2392308e7d08374cb1c3844afe7e3ee2fadbe0"
+    }
+  },
+  "51": {
+    "inputs": {
+      "resolution": 1024,
+      "steps": [
+        "41",
+        0
+      ],
+      "seed": [
+        "40",
+        0
+      ],
+      "guidance": 4,
+      "drop_background_tokens": true,
+      "memory_factor": 0,
+      "attention": "ultratex_sparse",
+      "sparse_topk": 0.4,
+      "token_chunk": 8192,
+      "denoise": 1,
+      "model": [
+        "50",
+        0
+      ],
+      "vae": [
+        "8",
+        0
+      ],
+      "positive": [
+        "36",
+        0
+      ],
+      "prep": [
+        "2",
+        0
+      ],
+      "negative": [
+        "36",
+        0
+      ]
+    },
+    "class_type": "UltraTexSampler",
+    "_meta": {
+      "title": "UltraTex Sampler",
+      "cnr_id": "ultratex",
+      "ver": "1f2392308e7d08374cb1c3844afe7e3ee2fadbe0"
+    }
+  },
+  "52": {
+    "inputs": {
+      "resolution": 1024,
+      "keep_above": 0.75,
+      "keep_feather": 0.1,
+      "texture": "metallic_roughness",
+      "prep": [
+        "26",
+        0
+      ],
+      "source_prep": [
+        "2",
+        0
+      ],
+      "source_views": [
+        "51",
+        0
+      ]
+    },
+    "class_type": "UltraTexRenderViews",
+    "_meta": {
+      "title": "UltraTex Render Views (second pass)",
+      "cnr_id": "ultratex",
+      "ver": "1f2392308e7d08374cb1c3844afe7e3ee2fadbe0"
+    }
+  },
+  "56": {
+    "inputs": {
+      "resolution": 1024,
+      "steps": [
+        "41",
+        0
+      ],
+      "seed": [
+        "40",
+        0
+      ],
+      "guidance": 4,
+      "drop_background_tokens": true,
+      "memory_factor": 0,
+      "attention": "ultratex_sparse",
+      "sparse_topk": 0.4,
+      "token_chunk": 8192,
+      "denoise": 1,
+      "model": [
+        "50",
+        0
+      ],
+      "vae": [
+        "8",
+        0
+      ],
+      "positive": [
+        "36",
+        0
+      ],
+      "prep": [
+        "26",
+        0
+      ],
+      "negative": [
+        "36",
+        0
+      ],
+      "init_views": [
+        "52",
+        0
+      ],
+      "keep_mask": [
+        "52",
+        1
+      ]
+    },
+    "class_type": "UltraTexSampler",
+    "_meta": {
+      "title": "UltraTex Sampler",
+      "cnr_id": "ultratex",
+      "ver": "1f2392308e7d08374cb1c3844afe7e3ee2fadbe0"
+    }
+  }
+}

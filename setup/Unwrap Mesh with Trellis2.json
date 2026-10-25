@@ -18,7 +18,7 @@
       "segmenter": "pec",
       "resolution": 1024,
       "padding": 1,
-      "weld_distance": 0.001,
+      "weld_distance": 0.0002,
       "mesh": [
         "11",
         0

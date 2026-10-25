@@ -932,6 +932,9 @@
 			"LoRA":[        				
 				{ "FileName": "ultratex_flux2.safetensors", "Url": "https://www.modelscope.ai/models/Yibo-Zhang/UltraTex/resolve/master/flux2/lora/dit_lora.safetensors?view=false", "Size": 0.47 }
 			],
+			"UpscaleModels": [
+				{ "FileName": "4xLexicaDAT2_otf.pth", "Url": "https://huggingface.co/visualbruno/Upscalers/resolve/main/4xLexicaDAT2_otf.pth?download=true", "Size": 0.1 }
+			],			
 			"Workflows": [
 				{
 					"Name": "Texture Mesh with UltraTex - 6 Views",
@@ -944,7 +947,8 @@
 						{ "Node": "2",  "Input": "uv_mode", "Name": "UV Mode",  "Type": "String", "Enums":["comfy_gpu","xatlas","keep_existing"] },
 						{ "Node": "40",  "Input": "value", "Name": "Seed",  "Type": "Number" },
 						{ "Node": "41",  "Input": "value", "Name": "Steps",  "Type": "Number" },
-						{ "Node": "25",  "Input": "guidance", "Name": "Guidance",  "Type": "Number" }
+						{ "Node": "25",  "Input": "guidance", "Name": "Guidance",  "Type": "Number" },
+						{ "Node": "43",  "Input": "value", "Name": "Upscale Image",  "Type": "Boolean" }
 					],
 					"Outputs": [
 						{ "Node": "32", "Name": "Save Mesh", "Type": "Mesh" }
@@ -961,8 +965,8 @@
 						{ "Node": "2",  "Input": "uv_mode", "Name": "UV Mode",  "Type": "String", "Enums":["comfy_gpu","xatlas","keep_existing"] },
 						{ "Node": "40",  "Input": "value", "Name": "Seed",  "Type": "Number" },
 						{ "Node": "41",  "Input": "value", "Name": "Steps",  "Type": "Number" },
-						{ "Node": "25",  "Input": "guidance", "Name": "Guidance",  "Type": "Number" },
-						{ "Node": "26",  "Input": "elevation", "Name": "Elevation",  "Type": "Number" }
+						{ "Node": "26",  "Input": "elevation", "Name": "Elevation",  "Type": "Number" },
+						{ "Node": "49",  "Input": "value", "Name": "Upscale Image",  "Type": "Boolean" }
 					],
 					"Outputs": [
 						{ "Node": "32", "Name": "Save Mesh", "Type": "Mesh" }
@@ -1010,10 +1014,29 @@
 						{ "Node": "2",  "Input": "uv_mode", "Name": "UV Mode",  "Type": "String", "Enums":["comfy_gpu","xatlas","keep_existing"] },
 						{ "Node": "29",  "Input": "value", "Name": "Seed",  "Type": "Number" },
 						{ "Node": "32",  "Input": "value", "Name": "Steps",  "Type": "Number" },
-						{ "Node": "24",  "Input": "guidance", "Name": "Guidance",  "Type": "Number" }
+						{ "Node": "24",  "Input": "guidance", "Name": "Guidance",  "Type": "Number" },
+						{ "Node": "40",  "Input": "value", "Name": "Upscale Image",  "Type": "Boolean" }
 					],
 					"Outputs": [
 						{ "Node": "12", "Name": "Save Mesh", "Type": "Mesh" }
+					]
+				},
+				{
+					"Name": "Texture Mesh with UltraTex PBR - 10 Views",
+					"File": "setup/Texture Mesh with UltraTex PBR - 16 Views.json",
+					"Inputs": [
+						{ "Node": "19", "Input": "image",  "Name": "Source Image", "Type": "Image" },
+						{ "Node": "22",  "Input": "glb_path",  "Name": "Source Mesh",   "Type": "Mesh" },
+						{ "Node": "38",  "Input": "value", "Name": "Resolution",  "Type": "Number", "Enums":[512,1024,1536,2048] },
+						{ "Node": "39",  "Input": "value", "Name": "Texture Size",  "Type": "Number", "Enums":[512,1024,2048,4096,8192] },
+						{ "Node": "2",  "Input": "uv_mode", "Name": "UV Mode",  "Type": "String", "Enums":["comfy_gpu","xatlas","keep_existing"] },
+						{ "Node": "40",  "Input": "value", "Name": "Seed",  "Type": "Number" },
+						{ "Node": "41",  "Input": "value", "Name": "Steps",  "Type": "Number" },
+						{ "Node": "26",  "Input": "elevation", "Name": "Elevation",  "Type": "Number" },
+						{ "Node": "49",  "Input": "value", "Name": "Upscale Image",  "Type": "Boolean" }
+					],
+					"Outputs": [
+						{ "Node": "32", "Name": "Save Mesh", "Type": "Mesh" }
 					]
 				}				
 			]
@@ -1334,10 +1357,11 @@
 				{ "Node": "1", "Input": "image",  "Name": "Source Image", "Type": "Image" },
 				{ "Node": "27",  "Input": "max_facenum",  "Name": "Target Face Number",   "Type": "Number" },
 				{ "Node": "5",  "Input": "seed",  "Name": "Seed",   "Type": "Number" },
-				{ "Node": "88",  "Input": "resolution",  "Name": "UV Size",   "Type": "Number" }
+				{ "Node": "92",  "Input": "resolution",  "Name": "UV Size",   "Type": "Number" },
+				{ "Node": "89",  "Input": "value",  "Name": "Fix Distortion",   "Type": "Boolean" }
 			],
 			"Outputs": [
-				{ "Node": "90", "Name": "Save Mesh", "Type": "Mesh" }
+				{ "Node": "93", "Name": "Save Mesh", "Type": "Mesh" }
 			]
 		},		
 		{

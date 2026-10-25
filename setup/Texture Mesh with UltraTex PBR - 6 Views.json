@@ -8,12 +8,12 @@
       "reference_alignment": "fit_front_silhouette",
       "mask_meaning": "background (LoadImage)",
       "reference_image": [
-        "19",
+        "39",
         0
       ],
       "reference_mask": [
-        "19",
-        1
+        "38",
+        0
       ],
       "trimesh": [
         "22",
@@ -24,7 +24,7 @@
     "_meta": {
       "title": "UltraTex Prep (mesh + reference)",
       "cnr_id": "ultratex",
-      "ver": "8137da52ed8352305cb7825b39c36a250bf2507a"
+      "ver": "1f2392308e7d08374cb1c3844afe7e3ee2fadbe0"
     }
   },
   "4": {
@@ -73,7 +73,7 @@
     "_meta": {
       "title": "UltraTex Sampler (Albedo)",
       "cnr_id": "ultratex",
-      "ver": "8137da52ed8352305cb7825b39c36a250bf2507a"
+      "ver": "1f2392308e7d08374cb1c3844afe7e3ee2fadbe0"
     }
   },
   "5": {
@@ -112,7 +112,7 @@
     "_meta": {
       "title": "UltraTex Load LoRA",
       "cnr_id": "ultratex",
-      "ver": "8137da52ed8352305cb7825b39c36a250bf2507a"
+      "ver": "1f2392308e7d08374cb1c3844afe7e3ee2fadbe0"
     }
   },
   "8": {
@@ -127,7 +127,7 @@
     "_meta": {
       "title": "UltraTex Foreground VAE Decoder",
       "cnr_id": "ultratex",
-      "ver": "8137da52ed8352305cb7825b39c36a250bf2507a"
+      "ver": "1f2392308e7d08374cb1c3844afe7e3ee2fadbe0"
     }
   },
   "9": {
@@ -158,6 +158,7 @@
       "detail_sharpness": 32,
       "exposure_match": true,
       "hole_fill": "mesh",
+      "views_2_weight": 0.6,
       "prep": [
         "2",
         0
@@ -175,7 +176,7 @@
     "_meta": {
       "title": "UltraTex Bake Texture",
       "cnr_id": "ultratex",
-      "ver": "8137da52ed8352305cb7825b39c36a250bf2507a"
+      "ver": "1f2392308e7d08374cb1c3844afe7e3ee2fadbe0"
     }
   },
   "19": {
@@ -198,7 +199,7 @@
     "_meta": {
       "title": "UltraText Load Mesh",
       "cnr_id": "ultratex",
-      "ver": "8137da52ed8352305cb7825b39c36a250bf2507a"
+      "ver": "1f2392308e7d08374cb1c3844afe7e3ee2fadbe0"
     }
   },
   "24": {
@@ -244,7 +245,7 @@
     "_meta": {
       "title": "UltraTex Sampler (Metallic Roughness)",
       "cnr_id": "ultratex",
-      "ver": "8137da52ed8352305cb7825b39c36a250bf2507a"
+      "ver": "1f2392308e7d08374cb1c3844afe7e3ee2fadbe0"
     }
   },
   "28": {
@@ -259,7 +260,7 @@
     "_meta": {
       "title": "UltraTex Text Encode",
       "cnr_id": "ultratex",
-      "ver": "8137da52ed8352305cb7825b39c36a250bf2507a"
+      "ver": "1f2392308e7d08374cb1c3844afe7e3ee2fadbe0"
     }
   },
   "29": {
@@ -319,7 +320,129 @@
     "_meta": {
       "title": "UltraTex Load LoRA",
       "cnr_id": "ultratex",
-      "ver": "8137da52ed8352305cb7825b39c36a250bf2507a"
+      "ver": "1f2392308e7d08374cb1c3844afe7e3ee2fadbe0"
+    }
+  },
+  "34": {
+    "inputs": {
+      "model_name": "4xLexicaDAT2_otf.pth"
+    },
+    "class_type": "UpscaleModelLoader",
+    "_meta": {
+      "title": "Load Upscale Model",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "35": {
+    "inputs": {
+      "upscale_model": [
+        "34",
+        0
+      ],
+      "image": [
+        "19",
+        0
+      ]
+    },
+    "class_type": "ImageUpscaleWithModel",
+    "_meta": {
+      "title": "Upscale Image (using Model)",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "36": {
+    "inputs": {
+      "model": "RMBG-2.0",
+      "sensitivity": 1,
+      "process_res": 1024,
+      "mask_blur": 0,
+      "mask_offset": 0,
+      "invert_output": false,
+      "refine_foreground": false,
+      "unload_model": true,
+      "background": "Alpha",
+      "background_color": "#222222",
+      "image": [
+        "35",
+        0
+      ]
+    },
+    "class_type": "RMBG",
+    "_meta": {
+      "title": "Remove Background (RMBG)",
+      "cnr_id": "comfyui-rmbg",
+      "ver": "a66a5e641a54988d80ed6aad18946081c85f309e"
+    }
+  },
+  "37": {
+    "inputs": {
+      "mask": [
+        "36",
+        1
+      ]
+    },
+    "class_type": "InvertMask",
+    "_meta": {
+      "title": "Invert Mask",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "38": {
+    "inputs": {
+      "switch": [
+        "40",
+        0
+      ],
+      "on_false": [
+        "19",
+        1
+      ],
+      "on_true": [
+        "37",
+        0
+      ]
+    },
+    "class_type": "ComfySwitchNode",
+    "_meta": {
+      "title": "If/Else Switch",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "39": {
+    "inputs": {
+      "switch": [
+        "40",
+        0
+      ],
+      "on_false": [
+        "19",
+        0
+      ],
+      "on_true": [
+        "36",
+        0
+      ]
+    },
+    "class_type": "ComfySwitchNode",
+    "_meta": {
+      "title": "If/Else Switch",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
+    }
+  },
+  "40": {
+    "inputs": {
+      "value": true
+    },
+    "class_type": "PrimitiveBoolean",
+    "_meta": {
+      "title": "Upscale Image",
+      "cnr_id": "comfy-core",
+      "ver": "0.42.0"
     }
   }
 }
