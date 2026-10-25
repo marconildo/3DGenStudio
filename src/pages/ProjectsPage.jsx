@@ -28,6 +28,16 @@ const PRESETS = [
 
 const CHANGE_LOG_ENTRIES = [
   {
+    version: 'v3.5.5',
+    date: '2026-10-25',
+    items: [
+			'SetupWizard: Added Fibo 2.0 Image Model',
+			'Improved AutoRetopo',
+			'Improved UltraTex',
+			'Updated ComfyUI and nodes'
+    ]
+  },
+  {
     version: 'v3.5.4',
     date: '2026-10-18',
     items: [

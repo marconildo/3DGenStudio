@@ -1107,10 +1107,10 @@
 					"Inputs": [
 						{ "Node": "28", "Input": "value",  "Name": "Prompt", "Type": "String" },
 						{ "Node": "133", "Input": "image",  "Name": "Source Image", "Type": "Image" },
-						{ "Node": "128:107",  "Input": "seed",  "Name": "Seed",   "Type": "Number" },
-						{ "Node": "127:116",  "Input": "switch",  "Name": "Use Prompt Enhancer",   "Type": "Boolean" },
-						{ "Node": "145:141",  "Input": "megapixels",  "Name": "Image Size in MPixels",   "Type": "Number" },
-						{ "Node": "128:107",  "Input": "steps", "Name": "Steps",  "Type": "Number" }
+						{ "Node": "128_107",  "Input": "seed",  "Name": "Seed",   "Type": "Number" },
+						{ "Node": "127_116",  "Input": "switch",  "Name": "Use Prompt Enhancer",   "Type": "Boolean" },
+						{ "Node": "145_141",  "Input": "megapixels",  "Name": "Image Size in MPixels",   "Type": "Number" },
+						{ "Node": "128_107",  "Input": "steps", "Name": "Steps",  "Type": "Number" }
 					],
 					"Outputs": [
 						{ "Node": "150", "Name": "Save Image", "Type": "Image" }
