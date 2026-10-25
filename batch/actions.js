@@ -197,10 +197,19 @@ const ACTION_DESCRIPTORS = {
       // Projection
       toggle('project', 'Project to surface', true, 'Pull the remesh back onto the original surface'),
       number('project_iters', 'Projection iterations', 10, '', { min: 0, max: 100, step: 1 }),
-      number('project_clamp', 'Move clamp', 1.5,
-        'Max per-vertex move as a multiple of local edge length', { min: 0, max: 10, step: 0.1 }),
       number('relax_strength', 'Relax strength', 0.4,
         'Tangential relaxation factor per iteration', { min: 0, max: 1, step: 0.05 }),
+      // Symmetry
+      choice('mirror', 'Mirror', 'off', 'Keep one half of the result and reflect it onto the other, so both sides share the same edge flow (mirrored weight painting, Auto UV symmetry seam). Auto picks the most symmetric axis.', [
+        { value: 'off', label: 'Off' },
+        { value: 'auto', label: 'Auto (most symmetric axis)' },
+        { value: 'x', label: 'X axis' },
+        { value: 'y', label: 'Y axis' },
+        { value: 'z', label: 'Z axis' }
+      ]),
+      number('mirror_max_cost', 'Mirror max detail cost (%)', 10,
+        'Keep the unmirrored result when mirroring raises the distance to the original by more than this — a model that only looks symmetric loses real geometry to the mirror. Safe in a batch: asymmetric meshes simply come back unmirrored.',
+        { min: 0, max: 100, step: 1 }),
       // Compute
       choice('device', 'Device', 'auto', 'The shell and projection stages run on an NVIDIA GPU when one is available; the remesh stage is always CPU.', [
         { value: 'auto', label: 'Auto (GPU if NVIDIA)' },

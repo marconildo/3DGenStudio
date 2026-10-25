@@ -43,8 +43,18 @@ class RetopoConfig:
     # --- silhouette projection ("follow the original surface") ---
     project: bool = True
     project_iters: int = 10
-    project_clamp: float = 1.5        # max per-vertex move as a multiple of local edge length
     relax_strength: float = 0.4       # tangential relaxation factor per iteration (0..1)
+                                      # (there was a `project_clamp` here; projection stopped using
+                                      # it when it moved to a smoothed displacement field, so it was
+                                      # removed on 2026-10-21 rather than left as a dead slider)
+
+    # --- mirror-symmetric output ---
+    mirror: str = "off"               # "off" | "auto" | "x" | "y" | "z": keep one half of the result
+                                      # and reflect it onto the other ("auto" picks the most symmetric axis)
+    mirror_max_cost: float = 10.0     # revert the mirror when it costs more than this % of detail
+                                      # (relative rise in mean distance, either direction). Measured
+                                      # 2026-10-21 at 10k faces: head/leopard <=1.5%, warrior ~10%,
+                                      # an asymmetric anime figure +82% - which is what this catches
 
     # --- compute backend (shell stage only) ---
     device: str = "auto"              # "auto": GPU if an NVIDIA CUDA device + CuPy are

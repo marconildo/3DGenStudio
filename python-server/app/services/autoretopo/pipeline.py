@@ -7,7 +7,7 @@
     print(result.metrics)
 
 Pipeline: ingest -> watertight shell -> field-adaptive remesh -> silhouette
-projection -> (optional quad) -> metrics.
+projection -> (optional mirror) -> (optional quad) -> metrics.
 """
 from __future__ import annotations
 import time
@@ -15,17 +15,19 @@ import numpy as np
 import trimesh
 
 from .config import RetopoConfig
-from . import ingest, shell, remesh, project, metrics, meshutil, gpu
+from . import ingest, shell, remesh, project, metrics, meshutil, gpu, mirror
 
 
 class RetopoResult:
-    def __init__(self, original, mesh, metrics_dict, timings, config, quad_faces=None):
+    def __init__(self, original, mesh, metrics_dict, timings, config, quad_faces=None,
+                 mirror_info=None):
         self.original = original
         self.mesh = mesh                  # trimesh.Trimesh (triangles)
         self.metrics = metrics_dict
         self.timings = timings
         self.config = config
         self.quad_faces = quad_faces      # list of polygonal faces if quads requested
+        self.mirror_info = mirror_info    # mirror.apply() report, None when mirror is off
 
     def export(self, path: str):
         self.mesh.export(path)
@@ -134,10 +136,27 @@ class AutoRetopo:
             self._log(f"[project] backend={proj_backend}")
             V = project.project_to_surface(
                 V, F, original, iters=cfg.project_iters,
-                clamp=cfg.project_clamp, relax_strength=cfg.relax_strength,
-                device=cfg.device)
-        V, F = remesh.finalize_watertight(V, F, verbose=cfg.verbose) if cfg.watertight else remesh.clean_slivers(V, F)
+                relax_strength=cfg.relax_strength, device=cfg.device)
+
+        def seal(V, F):
+            if cfg.watertight:
+                return remesh.finalize_watertight(V, F, verbose=cfg.verbose)
+            return remesh.clean_slivers(V, F)
+
+        V, F = seal(V, F)
         t["project"] = time.time() - t0
+
+        # Stage 3b (optional): mirror-symmetric output, on the finished surface
+        mirror_info = None
+        if cfg.mirror and cfg.mirror != "off":
+            t0 = time.time()
+            report("mirror", 0.86, "Mirroring")
+            V, F, mirror_info = mirror.apply(V, F, original, axis=cfg.mirror,
+                                             max_cost=cfg.mirror_max_cost, seal=seal)
+            self._log(f"[mirror] " + (f"across {mirror_info['axis'].upper()}, "
+                                      f"cost {mirror_info['cost_pct']}%" if mirror_info["applied"]
+                                      else f"skipped: {mirror_info.get('reason')}"))
+            t["mirror"] = time.time() - t0
 
         result_mesh = trimesh.Trimesh(V, F, process=False)
         result_mesh.fix_normals()
@@ -164,4 +183,4 @@ class AutoRetopo:
                   f"hausdorff={m['fidelity']['hausdorff_pct_diag']:.2f}% diag | "
                   f"well-shaped tris={m['triangle_quality']['pct_well_shaped']:.0f}%")
 
-        return RetopoResult(original, result_mesh, m, t, cfg.to_dict(), quad_faces)
+        return RetopoResult(original, result_mesh, m, t, cfg.to_dict(), quad_faces, mirror_info)

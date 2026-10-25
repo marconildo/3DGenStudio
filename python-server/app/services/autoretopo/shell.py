@@ -124,10 +124,14 @@ def voxel_shell(mesh: trimesh.Trimesh, resolution: int = 256,
     if not bool(dense.any()):
         raise RuntimeError("Voxelization produced an empty volume; lower shell_resolution.")
 
-    solid = ndi.binary_dilation(dense, iterations=close_iter) if close_iter else dense.copy()
+    # CuPy implements iterated binary morphology only in brute-force mode: any
+    # close_iter above 1 raised NotImplementedError on the GPU. Same result;
+    # SciPy keeps its faster changed-voxel tracking.
+    morph = {"brute_force": True} if be.on_gpu else {}
+    solid = ndi.binary_dilation(dense, iterations=close_iter, **morph) if close_iter else dense.copy()
     solid = ndi.binary_fill_holes(solid)
     if close_iter:
-        solid = ndi.binary_erosion(solid, iterations=close_iter)
+        solid = ndi.binary_erosion(solid, iterations=close_iter, **morph)
     solid |= dense
     del dense
 

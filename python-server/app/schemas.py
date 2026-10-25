@@ -152,9 +152,19 @@ class AutoRetopoOptions(BaseModel):
     project: bool = Field(default=True, description="Project the remesh back onto the original surface.")
     project_iters: int = Field(default=10, ge=0, le=100, description="Projection iterations.")
     project_clamp: float = Field(default=1.5, ge=0.0, le=10.0,
-                                 description="Max per-vertex move as a multiple of local edge length.")
+                                 description="Ignored. Projection stopped using it when it moved to a smoothed "
+                                             "displacement field; still accepted so saved option sets validate.")
     relax_strength: float = Field(default=0.4, ge=0.0, le=1.0,
                                   description="Tangential relaxation factor per iteration.")
+
+    # --- mirror-symmetric output ---
+    mirror: Literal["off", "auto", "x", "y", "z"] = Field(
+        default="off",
+        description="Keep one half of the result and reflect it onto the other, so both sides share "
+                    "the same edge flow. 'auto' picks the most symmetric axis.")
+    mirror_max_cost: float = Field(default=10.0, ge=0.0, le=1000.0,
+                                   description="Revert the mirror when it costs more than this % of detail "
+                                               "(the model is not symmetric enough). Raise to force it.")
 
     # --- compute backend (shell stage only) ---
     device: Literal["auto", "cpu", "cuda"] = Field(

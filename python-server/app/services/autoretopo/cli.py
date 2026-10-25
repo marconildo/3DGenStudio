@@ -31,7 +31,10 @@ def build_parser():
     p.add_argument("--feature-angle", type=float, default=25.0,
                    help="crease angle (deg) treated as a hard edge with --preserve-features")
     p.add_argument("--no-project", action="store_true", help="skip silhouette projection")
-    p.add_argument("--clamp", type=float, default=1.5, help="projection move clamp (x edge length)")
+    p.add_argument("--mirror", choices=["off", "auto", "x", "y", "z"], default="off",
+                   help="mirror one half of the result onto the other")
+    p.add_argument("--mirror-max-cost", type=float, default=10.0,
+                   help="revert the mirror when it costs more than this %% of detail")
     p.add_argument("--quads", action="store_true", help="convert to quad-dominant")
     p.add_argument("--compare", metavar="PNG", help="write a wireframe/shaded comparison image")
     p.add_argument("--metrics", metavar="JSON", help="write metrics to a JSON file")
@@ -45,7 +48,8 @@ def main(argv=None):
         target_faces=args.faces, shell_resolution=args.shell_res,
         shell_smooth=args.shell_smooth, watertight=not args.no_watertight,
         adaptive=not args.no_adaptive, project=not args.no_project,
-        project_clamp=args.clamp, quads=args.quads, max_memory_gb=args.max_memory,
+        mirror=args.mirror, mirror_max_cost=args.mirror_max_cost,
+        quads=args.quads, max_memory_gb=args.max_memory,
         preserve_features=args.preserve_features, feature_angle=args.feature_angle,
         verbose=not args.quiet)
 

@@ -32,8 +32,9 @@ def run_auto_retopo(mesh: trimesh.Trimesh, options: AutoRetopoOptions, progress=
         feature_angle=options.feature_angle,
         project=options.project,
         project_iters=options.project_iters,
-        project_clamp=options.project_clamp,
         relax_strength=options.relax_strength,
+        mirror=options.mirror,
+        mirror_max_cost=options.mirror_max_cost,
         device=options.device,
         seed=options.seed,
         verbose=False,
@@ -51,6 +52,7 @@ def run_auto_retopo(mesh: trimesh.Trimesh, options: AutoRetopoOptions, progress=
         "metrics": result.metrics,
         "timings": result.timings,
         "quad_face_count": (len(result.quad_faces) if result.quad_faces is not None else None),
+        "mirror": result.mirror_info,
     }
     # result.mesh is a triangle trimesh.Trimesh (GLB is triangles-only; the
     # quad-dominant face list, when requested, is summarized in stats above).

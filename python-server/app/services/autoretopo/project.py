@@ -101,7 +101,7 @@ vertex_edge_length = _vertex_edge_length
 lap_smooth = _lap_smooth
 
 
-def project_to_surface(V, F, target_mesh, iters=8, clamp=1.5, relax_strength=0.4,
+def project_to_surface(V, F, target_mesh, iters=8, relax_strength=0.4,
                        field_smooth_rounds=3, final_snap_clamp=0.4, device="auto"):
     """Project (V,F) onto target_mesh.
 
@@ -110,8 +110,7 @@ def project_to_surface(V, F, target_mesh, iters=8, clamp=1.5, relax_strength=0.4
     shape (especially after quadric decimation) without denting the form;
     (2) closest-point displacement with a normal-consistency guard, Laplacian-
     smoothed as a field before applying (kills crease zigzag and thin-geometry
-    punch-through). A final clamped normal-only micro-snap firms up creases.
-    `clamp` is kept for API compatibility."""
+    punch-through). A final clamped normal-only micro-snap firms up creases."""
     pq = _make_surface_query(target_mesh, device)
     try:
         return _project(pq, V, F, target_mesh, iters, relax_strength,

@@ -277,8 +277,9 @@ const DEFAULT_AUTO_RETOPO_OPTIONS = {
   feature_angle: 25,
   project: true,
   project_iters: 10,
-  project_clamp: 1.5,
   relax_strength: 0.4,
+  mirror: 'off',
+  mirror_max_cost: 10,
   device: 'auto',
   seed: 0,
 }
@@ -5167,6 +5168,15 @@ export default function MeshEditorPage() {
         const wt = m?.topology?.watertight
         if (wt != null) rows.push({ label: 'Watertight', value: wt ? 'Yes' : 'No — has holes' })
         if (stats?.tool?.quad_face_count != null) rows.push({ label: 'Quad faces', value: stats.tool.quad_face_count })
+        const mirror = stats?.tool?.mirror
+        if (mirror) {
+          rows.push({
+            label: 'Mirror',
+            value: mirror.applied
+              ? `Across ${mirror.axis.toUpperCase()} (${mirror.cost_pct > 0 ? '+' : ''}${mirror.cost_pct}% detail)`
+              : `Skipped — ${mirror.reason}`,
+          })
+        }
         return rows
       },
     })

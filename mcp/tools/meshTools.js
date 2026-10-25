@@ -86,8 +86,10 @@ const AUTO_RETOPO_OPTIONS = {
   // silhouette projection
   project: z.boolean().default(true).describe('Project the remesh back onto the original surface.'),
   project_iters: z.number().int().min(0).max(100).default(10).describe('Projection iterations.'),
-  project_clamp: z.number().min(0).max(10).default(1.5).describe('Max per-vertex move as a multiple of local edge length.'),
   relax_strength: z.number().min(0).max(1).default(0.4).describe('Tangential relaxation factor per iteration.'),
+  // mirror-symmetric output
+  mirror: z.enum(['off', 'auto', 'x', 'y', 'z']).default('off').describe("Keep one half of the result and reflect it onto the other so both sides share the same edge flow (mirrored weight painting, Auto UV's symmetry seam). 'auto' picks the most symmetric axis. The outcome (applied or skipped, axis, detail cost) is reported in the stats under tool.mirror."),
+  mirror_max_cost: z.number().min(0).max(1000).default(10).describe('Keep the unmirrored result when mirroring raises the distance to the original by more than this percent (the model is not symmetric enough). Raise to force the mirror.'),
   // compute backend (shell stage only)
   device: z.enum(['auto', 'cpu', 'cuda']).default('auto').describe("Shell-stage compute backend: 'auto' uses an NVIDIA GPU (CuPy) when available and falls back to CPU; 'cpu' forces CPU; 'cuda' forces GPU (errors if unavailable). Other stages always run on CPU."),
   // misc

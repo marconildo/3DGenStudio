@@ -265,14 +265,28 @@ export default function AutoRetopoToolsPanel({
         <NumberField label="Projection iterations" min={0} max={100} step={1}
           value={o.project_iters} onChange={v => setOption('project_iters', v)}
           disabled={fieldsDisabled || !o.project || (o.preserve_features && !o.watertight)} />
-        <RangeField label="Move clamp" min={0} max={10} step={0.1} decimals={1}
-          value={o.project_clamp} onChange={v => setOption('project_clamp', v)}
-          disabled={fieldsDisabled || !o.project || (o.preserve_features && !o.watertight)}
-          hint="Max per-vertex move as a multiple of local edge length" />
         <RangeField label="Relax strength" min={0} max={1} step={0.05} decimals={2}
           value={o.relax_strength} onChange={v => setOption('relax_strength', v)}
           disabled={fieldsDisabled || !o.project || (o.preserve_features && !o.watertight)}
           hint="Tangential relaxation factor per iteration" />
+      </div>
+
+      <div className="mesh-editor-panel__section">
+        <span className="mesh-editor-panel__section-title">Symmetry</span>
+        <SelectField label="Mirror" value={o.mirror}
+          onChange={v => setOption('mirror', v)} disabled={fieldsDisabled}
+          options={[
+            { value: 'off', label: 'Off' },
+            { value: 'auto', label: 'Auto (most symmetric axis)' },
+            { value: 'x', label: 'X axis' },
+            { value: 'y', label: 'Y axis' },
+            { value: 'z', label: 'Z axis' },
+          ]}
+          hint="Keep one half of the result and reflect it onto the other, so both sides share the same edge flow — useful for rigging (mirrored weight painting) and for Auto UV's symmetry seam. The plane is found on the original mesh." />
+        <RangeField label="Max detail cost" suffix="%" min={0} max={100} step={1}
+          value={o.mirror_max_cost} onChange={v => setOption('mirror_max_cost', v)}
+          disabled={fieldsDisabled || o.mirror === 'off'}
+          hint="A model that only looks symmetric (a turned head, a sword in one hand) loses real geometry to the mirror. If mirroring raises the distance to the original by more than this, the unmirrored result is kept. Raise it to force the mirror." />
       </div>
 
       <div className="mesh-editor-panel__section">
