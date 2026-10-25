@@ -1023,7 +1023,7 @@
 				},
 				{
 					"Name": "Texture Mesh with UltraTex PBR - 10 Views",
-					"File": "setup/Texture Mesh with UltraTex PBR - 16 Views.json",
+					"File": "setup/Texture Mesh with UltraTex PBR - 10 Views.json",
 					"Inputs": [
 						{ "Node": "19", "Input": "image",  "Name": "Source Image", "Type": "Image" },
 						{ "Node": "22",  "Input": "glb_path",  "Name": "Source Mesh",   "Type": "Mesh" },
